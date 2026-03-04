@@ -75,6 +75,37 @@ export default function MyRoutinesScreen({ navigation }: any) {
     reps: 12,
     duration: 15,
   });
+  const [exerciseFeedbackModal, setExerciseFeedbackModal] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    icon: 'alert-circle-outline' | 'checkmark-circle-outline';
+    color: string;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+    icon: 'alert-circle-outline',
+    color: COLORS.warning,
+  });
+
+  const showExerciseFeedback = (
+    title: string,
+    message: string,
+    type: 'warning' | 'success' = 'warning'
+  ) => {
+    setExerciseFeedbackModal({
+      visible: true,
+      title,
+      message,
+      icon: type === 'success' ? 'checkmark-circle-outline' : 'alert-circle-outline',
+      color: type === 'success' ? COLORS.success : COLORS.warning,
+    });
+  };
+
+  const closeExerciseFeedback = () => {
+    setExerciseFeedbackModal((prev) => ({ ...prev, visible: false }));
+  };
 
   // Animaciones para el modal
   const modalAnimation = useRef(new Animated.Value(0)).current;
@@ -178,7 +209,7 @@ export default function MyRoutinesScreen({ navigation }: any) {
   // Agregar ejercicio con día de la semana
   const handleAddExercise = async () => {
     if (!newExercise.name.trim()) {
-      Alert.alert('Atención', 'Ingresa el nombre del ejercicio');
+      showExerciseFeedback('Atención', 'Ingresa el nombre del ejercicio', 'warning');
       return;
     }
 
@@ -221,7 +252,7 @@ export default function MyRoutinesScreen({ navigation }: any) {
           const safePrev = Array.isArray(prev) ? prev : [];
           return [...safePrev, { ...data, dia_semana: diaSemana }];
         });
-        Alert.alert('Éxito', 'Ejercicio agregado correctamente');
+        showExerciseFeedback('Éxito', 'Ejercicio agregado correctamente', 'success');
 
         setNewExercise({ name: '', sets: 3, reps: 12, duration: 15 });
       }
@@ -635,6 +666,28 @@ export default function MyRoutinesScreen({ navigation }: any) {
         title="Seleccionar Duración"
         icon="duration"
       />
+
+      <Modal
+        visible={exerciseFeedbackModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeExerciseFeedback}
+      >
+        <View style={styles.feedbackOverlay}>
+          <View style={styles.feedbackCard}>
+            <View style={styles.feedbackIconWrap}>
+              <Ionicons name={exerciseFeedbackModal.icon} size={30} color={exerciseFeedbackModal.color} />
+            </View>
+
+            <Text style={styles.feedbackTitle}>{exerciseFeedbackModal.title}</Text>
+            <Text style={styles.feedbackMessage}>{exerciseFeedbackModal.message}</Text>
+
+            <TouchableOpacity style={styles.feedbackButton} onPress={closeExerciseFeedback}>
+              <Text style={styles.feedbackButtonText}>Entendido</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -992,5 +1045,62 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: COLORS.primary,
+  },
+  feedbackOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  feedbackCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    alignItems: 'center',
+    elevation: 6,
+  },
+  feedbackIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: COLORS.secondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  feedbackTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: COLORS.textDark,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  feedbackMessage: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  feedbackButton: {
+    width: '100%',
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feedbackButtonText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '900',
   },
 });

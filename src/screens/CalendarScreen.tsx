@@ -21,7 +21,7 @@ const COLORS = {
 };
 
 // Zona horaria San Luis Río Colorado, Sonora
-const TIMEZONE = 'America/Hermosillo';
+const TIMEZONE = 'America/Phoenix';
 const SONORA_TO_UTC_OFFSET_HOURS = 7;
 
 const APPOINTMENT_TIME_SLOTS = [
@@ -448,6 +448,18 @@ export default function CalendarScreen({ navigation, route }: any) {
 
       console.log('Enviando fecha a Supabase (UTC):', fechaHoraISO);
 
+      const { count: existingAppointmentsCount, error: countError } = await supabase
+        .from('citas')
+        .select('id_cita', { count: 'exact', head: true })
+        .eq('id_paciente', patientData.id_paciente)
+        .eq('id_nutriologo', doctorId);
+
+      if (countError) {
+        throw countError;
+      }
+
+      const isFirstAppointmentWithDoctor = (existingAppointmentsCount || 0) === 0;
+
       const { data: citaInsertada, error } = await supabase
         .from('citas')
         .insert({
@@ -469,6 +481,31 @@ export default function CalendarScreen({ navigation, route }: any) {
       }
 
       const citaId = citaInsertada.id_cita;
+      const doctorDisplayName = doctorName || 'tu nutriólogo';
+
+      if (isFirstAppointmentWithDoctor) {
+        const { error: welcomeNotificationError } = await supabase
+          .from('notificaciones')
+          .insert({
+            id_usuario: patientData.id_paciente,
+            tipo_usuario: 'paciente',
+            titulo: 'Bienvenido con tu nutriólogo',
+            mensaje: `Hola, soy ${doctorDisplayName} y seré tu nutriólogo en este proceso.`,
+            tipo: 'sistema',
+            leida: false,
+            fecha_envio: new Date().toISOString(),
+            datos_adicionales: {
+              id_cita: citaId,
+              id_nutriologo: doctorId,
+              autodescartable: true,
+              subtipo: 'bienvenida_nutriologo',
+            },
+          });
+
+        if (welcomeNotificationError) {
+          console.warn('No se pudo crear notificación de bienvenida:', welcomeNotificationError.message);
+        }
+      }
 
       // Navegar a pago sin alerta
       navigation.navigate('Schedule', {

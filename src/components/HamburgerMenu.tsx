@@ -8,6 +8,9 @@ import {
   Dimensions,
   I18nManager,
   Image,
+  ImageSourcePropType,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
@@ -38,6 +41,10 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
   const { signOut, user: authUser } = useAuth();
   const { user: userData, loading: userLoading } = useUser();
   const { profileImage } = useProfileImage(); // Obtenemos la imagen de perfil del contexto
+  const navigationLockRef = React.useRef(false);
+  const navigationTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isLogoutModalVisible, setIsLogoutModalVisible] = React.useState(false);
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   
   const slideAnim = React.useRef(new Animated.Value(-width)).current;
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
@@ -87,14 +94,50 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
     }
   }, [isVisible]);
 
+  React.useEffect(() => {
+    return () => {
+      if (navigationTimeoutRef.current) {
+        clearTimeout(navigationTimeoutRef.current);
+      }
+      navigationLockRef.current = false;
+    };
+  }, []);
+
   const handleMenuNavigation = (screenName: string) => {
+    if (navigationLockRef.current) return;
+    navigationLockRef.current = true;
+
     animateClose();
-    setTimeout(() => navigation.navigate(screenName), 300);
+
+    navigationTimeoutRef.current = setTimeout(() => {
+      navigation.navigate(screenName);
+      navigationLockRef.current = false;
+      navigationTimeoutRef.current = null;
+    }, 300);
+  };
+
+  const openLogoutModal = () => {
+    setIsLogoutModalVisible(true);
+  };
+
+  const closeLogoutModal = () => {
+    if (isLoggingOut) return;
+    setIsLogoutModalVisible(false);
   };
 
   const handleLogout = async () => {
-    animateClose();
-    await signOut();
+    if (navigationLockRef.current) return;
+    navigationLockRef.current = true;
+
+    try {
+      setIsLoggingOut(true);
+      setIsLogoutModalVisible(false);
+      animateClose();
+      await signOut();
+    } finally {
+      setIsLoggingOut(false);
+      navigationLockRef.current = false;
+    }
     // La navegación se manejará automáticamente por el AppNavigator
   };
 
@@ -142,13 +185,15 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
   };
 
   // Determinar qué imagen mostrar en el avatar
-  const getAvatarSource = () => {
+  const getAvatarSource = (): ImageSourcePropType | null => {
     if (profileImage && profileImage !== 'usu.webp') {
       return { uri: profileImage };
     }
     // Si no hay foto de perfil, mostramos el icono por defecto
     return null;
   };
+
+  const avatarSource = getAvatarSource();
 
   if (!isVisible) return null;
 
@@ -163,8 +208,7 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
         {/* Header del menú estilo Nutri U */}
         <View style={styles.menuHeader}>
           <View style={styles.brandContainer}>
-            <Text style={styles.brandName}>NUTRI U</Text>
-            <View style={styles.underline} />
+            <Image source={require('../../assets/logo.png')} style={styles.brandLogo} resizeMode="contain" />
             <Text style={styles.menuSubtitle}>Gestión Profesional</Text>
           </View>
           <TouchableOpacity style={styles.closeButton} onPress={animateClose}>
@@ -175,9 +219,9 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
         {/* Sección de usuario con datos reales y foto de perfil */}
         <View style={styles.userSection}>
           <View style={styles.userAvatar}>
-            {getAvatarSource() ? (
+            {avatarSource ? (
               <Image 
-                source={getAvatarSource()} 
+                source={avatarSource} 
                 style={styles.avatarImage}
                 onError={(e) => console.log('Error cargando avatar en menú:', e.nativeEvent.error)}
               />
@@ -218,7 +262,7 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
                 onPress={() => handleMenuNavigation(item.screen)}
               >
                 <View style={styles.iconBackground}>
-                  <Ionicons name={item.icon} size={20} color={COLORS.primary} />
+                  <Ionicons name={item.icon as any} size={20} color={COLORS.primary} />
                 </View>
                 <Text style={styles.menuItemText}>{item.name}</Text>
                 <Ionicons 
@@ -236,7 +280,7 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
         <View style={styles.menuFooter}>
           <TouchableOpacity 
             style={styles.logoutButton} 
-            onPress={handleLogout}
+            onPress={openLogoutModal}
           >
             <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
             <Text style={styles.logoutText}>Cerrar Sesión</Text>
@@ -245,6 +289,45 @@ export default function HamburgerMenu({ isVisible, onClose, navigation }: Hambur
           <Text style={styles.footerVersion}>Nutri U v1.0.0 | 2026</Text>
         </View>
       </Animated.View>
+
+      <Modal
+        visible={isLogoutModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeLogoutModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Ionicons name="log-out-outline" size={32} color={COLORS.danger} />
+            <Text style={styles.modalTitle}>¿Seguro que deseas salir?</Text>
+            <Text style={styles.modalMessage}>
+              Se cerrará tu sesión actual y tendrás que iniciar sesión nuevamente.
+            </Text>
+
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={closeLogoutModal}
+                disabled={isLoggingOut}
+              >
+                <Text style={styles.modalCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalLogoutButton}
+                onPress={handleLogout}
+                disabled={isLoggingOut}
+              >
+                {isLoggingOut ? (
+                  <ActivityIndicator color={COLORS.white} size="small" />
+                ) : (
+                  <Text style={styles.modalLogoutText}>Salir</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -278,6 +361,7 @@ const styles = StyleSheet.create({
     marginBottom: 30,
   },
   brandContainer: { flex: 1 },
+  brandLogo: { width: 140, height: 42 },
   brandName: { fontSize: 24, fontWeight: '900', color: COLORS.primary, letterSpacing: 1.5 },
   underline: { width: 30, height: 4, backgroundColor: COLORS.accent, borderRadius: 2, marginTop: 4 },
   menuSubtitle: { fontSize: 12, color: COLORS.textLight, marginTop: 6, fontWeight: '300' },
@@ -378,5 +462,72 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 15,
     letterSpacing: 0.5
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(26, 48, 38, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    zIndex: 1200,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    marginTop: 10,
+    fontSize: 18,
+    fontWeight: '900',
+    color: COLORS.textDark,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    marginTop: 8,
+    fontSize: 14,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalButtonsRow: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 22,
+  },
+  modalCancelButton: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.secondary,
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: COLORS.textDark,
+  },
+  modalLogoutButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.danger,
+  },
+  modalLogoutText: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: COLORS.white,
   },
 });

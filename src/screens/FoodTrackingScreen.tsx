@@ -91,6 +91,39 @@ const parseTimestampAsUTC = (value?: string | null): Date | null => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const parseSuggestedPortion = (portion?: string | null) => {
+  const fallback = { qty: 1, unit: 'porción', raw: '' };
+  if (!portion) return fallback;
+
+  const raw = String(portion).trim();
+  if (!raw) return fallback;
+
+  const normalized = raw.replace(',', '.');
+  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
+
+  if (!match) {
+    return {
+      qty: 1,
+      unit: raw.toLowerCase(),
+      raw,
+    };
+  }
+
+  const qty = Number.parseFloat(match[1]);
+  const unit = (match[2] || 'porción').trim().toLowerCase();
+
+  return {
+    qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
+    unit: unit || 'porción',
+    raw,
+  };
+};
+
+const formatQtyInput = (qty: number) => {
+  if (!Number.isFinite(qty) || qty <= 0) return '1';
+  return Number.isInteger(qty) ? String(qty) : String(qty);
+};
+
 export default function FoodTrackingScreen({ navigation }: any) {
   const { user, updatePoints } = useUser();
   const { isOffline } = useNetwork();
@@ -116,6 +149,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
   const [isRegistering, setIsRegistering] = useState(false);
   const [todayDayIndex, setTodayDayIndex] = useState(0);
   const [registeredMealsToday, setRegisteredMealsToday] = useState<Set<string>>(new Set());
+  const [showOnlyTodayModal, setShowOnlyTodayModal] = useState(false);
 
   const ensureOnlineForWrite = async (message = 'Sin internet solo puedes ver tu plan. No puedes registrar comida.') => {
     const netInfo = await NetInfo.fetch();
@@ -363,13 +397,26 @@ export default function FoodTrackingScreen({ navigation }: any) {
   }, [todayHistory]);
 
   const handleAmountChange = (text: string) => {
-    const cleanText = text.replace(/[^0-9]/g, '');
-    if (cleanText === '') { setAmount(''); return; }
-    const numericValue = parseInt(cleanText);
-    if (numericValue > (selectedFood?.max || 999)) {
-      setAmount((selectedFood?.max || 999).toString());
+    const normalized = text.replace(',', '.');
+    const cleanText = normalized.replace(/[^0-9.]/g, '');
+    const valid = cleanText.replace(/(\..*)\./g, '$1');
+
+    if (valid === '') {
+      setAmount('');
+      return;
+    }
+
+    const numericValue = Number.parseFloat(valid);
+    if (!Number.isFinite(numericValue) || numericValue <= 0) {
+      setAmount('');
+      return;
+    }
+
+    const maxValue = Number(selectedFood?.max || 999);
+    if (numericValue > maxValue) {
+      setAmount(formatQtyInput(maxValue));
     } else {
-      setAmount(numericValue.toString());
+      setAmount(valid);
     }
   };
 
@@ -391,7 +438,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
       return;
     }
 
-    const qty = parseInt(amount);
+    const qty = Number.parseFloat(amount);
     if (!qty || qty <= 0) {
       Alert.alert('Atención', 'Ingresa una cantidad válida.');
       return;
@@ -401,7 +448,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
 
     try {
       const kcalTotal = qty * (selectedFood.kcalPerUnit || 0);
-      const maxQty = selectedFood.max || 100;
+      const maxQty = Number(selectedFood.max || 1);
       const pointsEarned = Math.round((qty / maxQty) * (selectedFood.pts || 3));
       const pointsFinal = Math.max(1, Math.min(pointsEarned, selectedFood.pts || 3));
 
@@ -421,7 +468,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
         id_alimento: selectedFood.id_alimento || null,
         alimento_personalizado: selectedFood.platillo || selectedFood.name || null,
         cantidad: qty,
-        unidad: selectedFood.unit || 'g',
+        unidad: selectedFood.unit || 'porción',
         calorias_totales: kcalTotal,
         puntos_obtenidos: pointsFinal,
         fecha: new Date().toISOString().split('T')[0],
@@ -452,7 +499,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
         }
       } else {
         await updatePoints(pointsFinal);
-        Alert.alert('Éxito', `¡${qty} ${selectedFood.unit || 'g'} registrados! +${pointsFinal} pts`);
+        Alert.alert('Éxito', `¡${formatQtyInput(qty)} ${selectedFood.unit || 'porción'} registrados! +${pointsFinal} pts`);
 
         // Bloqueo inmediato + refresco
         setRegisteredMealsToday(prev => new Set([...prev, mealTypeRaw]));
@@ -597,7 +644,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
         {isUnassigned && (
           <TouchableOpacity
             style={styles.noDietButton}
-            onPress={() => navigation.navigate('Schedule', { view: 'agendar' })}
+            onPress={() => navigation.navigate('Schedule', { initialTab: 'pendientes' })}
           >
             <Text style={styles.noDietButtonText}>Agendar consulta</Text>
           </TouchableOpacity>
@@ -635,7 +682,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
             </Text>
             <TouchableOpacity 
               style={styles.noDietButton}
-              onPress={() => navigation.navigate('Schedule', { view: 'agendar' })}
+              onPress={() => navigation.navigate('Schedule', { initialTab: 'pendientes' })}
             >
               <Text style={styles.noDietButtonText}>Agendar consulta</Text>
             </TouchableOpacity>
@@ -692,7 +739,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
                   onPress={async () => {
                     if (!(await ensureOnlineForWrite('Sin internet solo puedes ver tu plan.'))) return;
                     if (!isToday) {
-                      Alert.alert('Solo hoy', 'Solo puedes registrar alimentos para el día de hoy.');
+                      setShowOnlyTodayModal(true);
                       return;
                     }
                     if (isRegistered) {
@@ -701,18 +748,20 @@ export default function FoodTrackingScreen({ navigation }: any) {
                     }
                     if (isRegistering) return;
 
+                    const suggested = parseSuggestedPortion(item.porcion_sugerida);
+
                     setSelectedFood({
                       id_alimento: item.id_alimento || item.id_alimento_resuelto || null,
                       name: getAssignedFoodName(item),
                       platillo: String(item?.platillo_asignado || item?.descripcion || '').trim() || null,
-                      max: 100,
-                      unit: item.porcion_sugerida?.includes('g') ? 'g' : 'unidad',
+                      max: suggested.qty,
+                      unit: suggested.unit,
                       kcalPerUnit: item.calorias_por_100g ? item.calorias_por_100g / 100 : 1,
                       pts: 3,
                       horario: item.horario || null,
                       type: meal, // ← Valor original, con acentos y mayúsculas
                     });
-                    setAmount('100');
+                    setAmount(formatQtyInput(suggested.qty));
                   }}
                   disabled={isOffline || isRegistering || (isRegistered && isToday)}
                 >
@@ -1092,7 +1141,9 @@ export default function FoodTrackingScreen({ navigation }: any) {
               {isOffline && (
                 <View style={styles.offlineReadOnlyBanner}>
                   <Ionicons name="cloud-offline-outline" size={16} color={COLORS.warning} />
-                  <Text style={styles.offlineReadOnlyText}>Sin conexión: solo lectura, no puedes registrar comida.</Text>
+                  <Text style={styles.offlineReadOnlyText}>
+                    Sin conexión: solo lectura, no puedes registrar comida.
+                  </Text>
                 </View>
               )}
 
@@ -1126,7 +1177,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
                     styles.inputMassive,
                     (registeredMealsToday.has(selectedFood?.type) || isOffline) && { color: COLORS.disabled }
                   ]}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={amount}
                   onChangeText={handleAmountChange}
                   placeholder="0"
@@ -1134,7 +1185,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
                   editable={!isOffline && !isRegistering && !registeredMealsToday.has(selectedFood?.type)}
                 />
                 <Text style={styles.unitSmall}>
-                  {selectedFood?.unit?.toUpperCase() || 'G'}
+                  {selectedFood?.unit?.toUpperCase() || 'PORCIÓN'}
                 </Text>
               </View>
 
@@ -1169,6 +1220,33 @@ export default function FoodTrackingScreen({ navigation }: any) {
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showOnlyTodayModal}
+        animationType="fade"
+        onRequestClose={() => setShowOnlyTodayModal(false)}
+      >
+        <View style={styles.infoModalOverlay}>
+          <View style={styles.infoModalCard}>
+            <View style={styles.infoModalIconWrap}>
+              <Ionicons name="calendar-outline" size={24} color={COLORS.primary} />
+            </View>
+
+            <Text style={styles.infoModalTitle}>Solo hoy</Text>
+            <Text style={styles.infoModalMessage}>
+              Solo puedes registrar alimentos para el día de hoy.
+            </Text>
+
+            <TouchableOpacity
+              style={styles.infoModalButton}
+              onPress={() => setShowOnlyTodayModal(false)}
+            >
+              <Text style={styles.infoModalButtonText}>Entendido</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
@@ -1599,6 +1677,67 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textLight,
     fontWeight: '700',
+  },
+  infoModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  infoModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+  },
+  infoModalIconWrap: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: COLORS.secondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  infoModalTitle: {
+    fontSize: 20,
+    color: COLORS.primary,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  infoModalMessage: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  infoModalButton: {
+    width: '100%',
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  infoModalButtonText: {
+    color: COLORS.white,
+    fontWeight: '900',
+    fontSize: 14,
+    letterSpacing: 0.4,
   },
 
   // Estilos para días bloqueados

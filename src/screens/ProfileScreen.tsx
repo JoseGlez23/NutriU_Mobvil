@@ -9,10 +9,10 @@ import {
   StatusBar,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   TextInput,
   Animated,
-  Easing
+  Easing,
+  Modal
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker'; 
@@ -141,6 +141,34 @@ export default function ProfileScreen({ navigation }: any) {
   const [isEditing, setIsEditing] = useState(false);
   const [editedUser, setEditedUser] = useState<any>(null);
   const [localImageUri, setLocalImageUri] = useState<string | null>(null);
+  const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [photoModal, setPhotoModal] = useState({
+    visible: false,
+    title: '',
+    message: '',
+    icon: 'information-circle-outline',
+    color: COLORS.primary,
+  });
+
+  const showPhotoModal = (
+    title: string,
+    message: string,
+    icon: string = 'information-circle-outline',
+    color: string = COLORS.primary
+  ) => {
+    setPhotoModal({
+      visible: true,
+      title,
+      message,
+      icon,
+      color,
+    });
+  };
+
+  const closePhotoModal = () => {
+    setPhotoModal((prev) => ({ ...prev, visible: false }));
+  };
 
   // Loading animation values
   const pulseValue = useRef(new Animated.Value(1)).current;
@@ -226,7 +254,12 @@ export default function ProfileScreen({ navigation }: any) {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     
     if (status !== 'granted') {
-      Alert.alert('Permiso denegado', 'Necesitamos permisos para acceder a tus fotos.');
+      showPhotoModal(
+        'Permiso denegado',
+        'Necesitamos permisos para acceder a tus fotos.',
+        'warning-outline',
+        '#FFA500'
+      );
       return;
     }
 
@@ -293,10 +326,20 @@ export default function ProfileScreen({ navigation }: any) {
       setProfileImage(publicUrl + `?t=${Date.now()}`);
       setLocalImageUri(null);
       refreshUserData();
-      Alert.alert('Éxito', 'Foto de perfil actualizada y guardada.');
+      showPhotoModal(
+        '¡Foto actualizada!',
+        'Tu foto de perfil se guardó correctamente.',
+        'checkmark-circle-outline',
+        COLORS.primary
+      );
     } catch (err) {
       console.error('Error al subir foto:', err);
-      Alert.alert('Error', 'No se pudo subir la foto. Intenta de nuevo.');
+      showPhotoModal(
+        'Error al subir foto',
+        'No se pudo subir la foto. Intenta de nuevo.',
+        'close-circle-outline',
+        COLORS.error
+      );
     }
   };
 
@@ -316,15 +359,40 @@ export default function ProfileScreen({ navigation }: any) {
 
       setIsEditing(false);
       refreshUserData();
-      Alert.alert('Éxito', 'Nombre de usuario actualizado correctamente.');
+      showPhotoModal(
+        '¡Nombre actualizado!',
+        'Tu nombre de usuario se guardó correctamente.',
+        'checkmark-circle-outline',
+        COLORS.primary
+      );
     } catch (err) {
       console.error('Error al guardar:', err);
-      Alert.alert('Error', 'No se pudo guardar el cambio.');
+      showPhotoModal(
+        'Error al guardar',
+        'No se pudo guardar el cambio.',
+        'close-circle-outline',
+        COLORS.error
+      );
     }
   };
 
+  const openLogoutModal = () => {
+    setIsLogoutModalVisible(true);
+  };
+
+  const closeLogoutModal = () => {
+    if (isLoggingOut) return;
+    setIsLogoutModalVisible(false);
+  };
+
   const handleLogout = async () => {
-    await signOut();
+    try {
+      setIsLoggingOut(true);
+      await signOut();
+      setIsLogoutModalVisible(false);
+    } finally {
+      setIsLoggingOut(false);
+    }
   };
 
   const calculateAge = (fechaNacimiento: string) => {
@@ -583,13 +651,76 @@ export default function ProfileScreen({ navigation }: any) {
 
           {/* CERRAR SESIÓN */}
           <View style={styles.footer}>
-            <TouchableOpacity onPress={handleLogout}>
+            <TouchableOpacity onPress={openLogoutModal}>
               <Text style={styles.logoutText}>Cerrar Sesión</Text>
             </TouchableOpacity>
           </View>
           
           <View style={{ height: 40 }} />
         </ScrollView>
+
+        <Modal
+          visible={isLogoutModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={closeLogoutModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Ionicons name="log-out-outline" size={34} color={COLORS.error} />
+              <Text style={styles.modalTitle}>¿Seguro que deseas salir?</Text>
+              <Text style={styles.modalMessage}>
+                Se cerrará tu sesión actual y tendrás que iniciar sesión nuevamente.
+              </Text>
+
+              <View style={styles.modalButtonsRow}>
+                <TouchableOpacity
+                  style={styles.modalCancelButton}
+                  onPress={closeLogoutModal}
+                  disabled={isLoggingOut}
+                >
+                  <Text style={styles.modalCancelText}>Cancelar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.modalLogoutButton}
+                  onPress={handleLogout}
+                  disabled={isLoggingOut}
+                >
+                  {isLoggingOut ? (
+                    <ActivityIndicator color={COLORS.white} size="small" />
+                  ) : (
+                    <Text style={styles.modalLogoutText}>Salir</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={photoModal.visible}
+          transparent
+          animationType="fade"
+          onRequestClose={closePhotoModal}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Ionicons name={photoModal.icon as any} size={36} color={photoModal.color} />
+              <Text style={styles.modalTitle}>{photoModal.title}</Text>
+              <Text style={styles.modalMessage}>{photoModal.message}</Text>
+
+              <View style={styles.photoModalButtonWrap}>
+                <TouchableOpacity
+                  style={styles.photoModalOkButton}
+                  onPress={closePhotoModal}
+                >
+                  <Text style={styles.photoModalOkText}>Entendido</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
@@ -837,6 +968,89 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
 
-  footer: { marginTop: 10, alignItems: 'center' },
+  footer: { marginTop: 2, alignItems: 'center' },
   logoutText: { color: COLORS.error, fontWeight: '900', fontSize: 15, opacity: 0.8 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: COLORS.textDark + '66',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+    borderRadius: 22,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  modalTitle: {
+    marginTop: 10,
+    fontSize: 19,
+    fontWeight: '900',
+    color: COLORS.textDark,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    marginTop: 8,
+    fontSize: 14,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalButtonsRow: {
+    marginTop: 22,
+    width: '100%',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  modalCancelButton: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.secondary,
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: COLORS.textDark,
+  },
+  modalLogoutButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.error,
+    minHeight: 44,
+  },
+  modalLogoutText: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: COLORS.white,
+  },
+  photoModalButtonWrap: {
+    marginTop: 22,
+    width: '100%',
+  },
+  photoModalOkButton: {
+    width: '100%',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.primary,
+  },
+  photoModalOkText: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: COLORS.white,
+  },
 });

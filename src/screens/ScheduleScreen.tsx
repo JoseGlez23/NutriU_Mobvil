@@ -15,7 +15,11 @@ import {
   Animated, 
   Easing,
   TextInput,
-  RefreshControl
+  RefreshControl,
+  KeyboardAvoidingView,
+  Keyboard,
+  TouchableWithoutFeedback,
+  Platform,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
@@ -23,9 +27,6 @@ import { useNutriologo } from '../context/NutriologoContext';
 import { supabase } from '../lib/supabase';
 import { useUser } from '../hooks/useUser';
 import { CardField, useStripe } from '@stripe/stripe-react-native';
-import { patientPlanService } from '../services/patientPlanService';
-import { useNetwork } from '../utils/NetworkHandler';
-import NetInfo from '@react-native-community/netinfo';
 
 const { width } = Dimensions.get('window');
 
@@ -62,19 +63,42 @@ const PAYMENT_COLORS = {
   error: '#DC3545',
 };
 
-const TIMEZONE = 'America/Hermosillo';
+const SONORA_TIMEZONE = 'America/Phoenix';
 
 const parseDbTimestampAsUtc = (value: string) => {
   const baseValue = String(value || '').trim().replace(' ', 'T');
-  const hasTimezone = /([zZ]|[+\-]\d{2}:\d{2})$/.test(baseValue);
-  return new Date(hasTimezone ? baseValue : `${baseValue}Z`);
+  const hasTimezone = /([zZ]|[+\-]\d{2}(?::?\d{2})?)$/.test(baseValue);
+
+  if (hasTimezone) {
+    return new Date(baseValue);
+  }
+
+  const match = baseValue.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?$/);
+  if (!match) {
+    return new Date(`${baseValue}Z`);
+  }
+
+  const [, year, month, day, hour, minute, second = '00', millis = '0'] = match;
+  const milliseconds = Number(millis.padEnd(3, '0'));
+
+  return new Date(Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    milliseconds,
+  ));
 };
+
+const CLINIC_OPEN_HOUR = 7;
+const CLINIC_CLOSE_HOUR = 16;
 
 export default function ScheduleScreen({ navigation, route }: any) {
   const { user: authUser } = useAuth();
   const { user: patientData, refreshUser } = useUser();
   const { refreshNutriologo, nutriologo } = useNutriologo();
-  const { isOffline } = useNetwork();
 
   const [viewMode, setViewMode] = useState('agendar');
   const [doctors, setDoctors] = useState<any[]>([]);
@@ -99,20 +123,9 @@ export default function ScheduleScreen({ navigation, route }: any) {
   const [selectedAppointment, setSelectedAppointment] = useState<any>(null);
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
 
+  const [nutriologoAssignedModal, setNutriologoAssignedModal] = useState(false);
   const [nutriologoInfoModal, setNutriologoInfoModal] = useState(false);
   const [nutriologoInfoMsg, setNutriologoInfoMsg] = useState('');
-
-  const ensureOnlineForWrite = async (message: string) => {
-    const netInfo = await NetInfo.fetch();
-    const online = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
-
-    if (!online) {
-      Alert.alert('Sin conexión', message);
-      return false;
-    }
-
-    return true;
-  };
 
   const { confirmPayment } = useStripe();
 
@@ -315,7 +328,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
         return;
       }
 
-      const relationStartMs = new Date(relationStartDate).getTime();
+      const relationStartMs = parseDbTimestampAsUtc(relationStartDate).getTime();
 
       const formatted = ((data || []).map(cita => {
         const nutri: any = Array.isArray(cita.nutriologos) ? cita.nutriologos[0] : cita.nutriologos;
@@ -323,16 +336,16 @@ export default function ScheduleScreen({ navigation, route }: any) {
 
         const fechaHora = parseDbTimestampAsUtc(cita.fecha_hora);
 
-        const fecha = fechaHora.toLocaleDateString('es-MX', {
-          timeZone: TIMEZONE,
+        const fecha = fechaHora.toLocaleDateString('es-MX', { 
+          timeZone: SONORA_TIMEZONE,
           weekday: 'long', 
           day: 'numeric', 
           month: 'long', 
           year: 'numeric' 
         });
 
-        const hora = fechaHora.toLocaleTimeString('es-MX', {
-          timeZone: TIMEZONE,
+        const hora = fechaHora.toLocaleTimeString('es-MX', { 
+          timeZone: SONORA_TIMEZONE,
           hour: 'numeric', 
           minute: '2-digit', 
           hour12: true 
@@ -423,15 +436,8 @@ export default function ScheduleScreen({ navigation, route }: any) {
   }, [nutriologo]);
 
   const handleSelectDoctor = async (doctor: any) => {
-    if (!(await ensureOnlineForWrite('Sin internet solo puedes ver información. No puedes agendar citas.'))) {
-      return;
-    }
-
     if (nutriologo && nutriologo.id_nutriologo !== doctor.realId) {
-      Alert.alert(
-        'Nutriólogo asignado',
-        `Actualmente tu nutriólogo de cabecera es Dr. ${nutriologo.nombre} ${nutriologo.apellido}. No puedes agendar con otro hasta desasignarte.`
-      );
+      setNutriologoAssignedModal(true);
       return;
     }
 
@@ -487,11 +493,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
     );
   };
 
-  const handlePaymentFromPending = async (appointment: any) => {
-    if (!(await ensureOnlineForWrite('Sin internet solo puedes ver tus citas. No puedes pagar ahora.'))) {
-      return;
-    }
-
+  const handlePaymentFromPending = (appointment: any) => {
     setSelectedDoctor({
       name: appointment.doctorName,
       realId: appointment.id_nutriologo,
@@ -502,10 +504,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
   };
 
   const handlePayment = async () => {
-    if (!(await ensureOnlineForWrite('Sin internet no se pueden procesar pagos.'))) {
-      return;
-    }
-
     if (!citaId || !patientData?.id_paciente || !selectedDoctor) {
       Alert.alert('Error', 'No se pudo procesar el pago. Intenta nuevamente.');
       return;
@@ -607,11 +605,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
           
           // Actualizar a activo si estaba inactivo
           if (!relacionExistente.activo) {
-            const { success: plansCleared, error: clearPlansError } = await patientPlanService.clearActivePlans(patientData.id_paciente);
-            if (!plansCleared) {
-              throw new Error(clearPlansError || 'No se pudieron limpiar dieta y rutina activas');
-            }
-
             await supabase
               .from('paciente_nutriologo')
               .update({ activo: true, fecha_asignacion: new Date().toISOString() })
@@ -622,11 +615,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
           console.log('✅ Creando nueva relación con nutriólogo');
           
           const nutriologoId = Number(selectedDoctor.realId);
-
-          const { success: plansCleared, error: clearPlansError } = await patientPlanService.clearActivePlans(patientData.id_paciente);
-          if (!plansCleared) {
-            throw new Error(clearPlansError || 'No se pudieron limpiar dieta y rutina activas');
-          }
           
           // Desactivar relaciones anteriores con otros nutriólogos
           await supabase
@@ -798,19 +786,11 @@ export default function ScheduleScreen({ navigation, route }: any) {
               <Text style={styles.subtitle}>Elige entre todos los nutriólogos disponibles y agenda de forma rápida.</Text>
             </View>
 
-            {isOffline && (
-              <View style={styles.offlineReadOnlyCard}>
-                <Ionicons name="cloud-offline-outline" size={18} color={COLORS.warning} />
-                <Text style={styles.offlineReadOnlyText}>Sin internet: modo solo lectura. Puedes ver nutriólogos, pero no agendar citas.</Text>
-              </View>
-            )}
-
             {doctors.map((doctor) => (
               <TouchableOpacity
                 key={doctor.id}
-                style={[styles.doctorCard, isOffline && styles.disabledDoctorCard]}
+                style={styles.doctorCard}
                 onPress={() => handleSelectDoctor(doctor)}
-                disabled={isOffline}
                 activeOpacity={0.7}
               >
                 <View style={styles.avatarContainer}>
@@ -845,9 +825,9 @@ export default function ScheduleScreen({ navigation, route }: any) {
                       <Text style={styles.priceText}>${doctor.price.toLocaleString('es-MX')}</Text>
                     </View>
 
-                    <View style={[styles.doctorActionPill, isOffline && styles.disabledActionPill]}>
-                      <Text style={[styles.doctorActionText, isOffline && styles.disabledActionText]}>{isOffline ? 'Sin internet' : 'Agendar'}</Text>
-                      <Ionicons name="chevron-forward" size={14} color={isOffline ? COLORS.textLight : COLORS.primary} />
+                    <View style={styles.doctorActionPill}>
+                      <Text style={styles.doctorActionText}>Agendar</Text>
+                      <Ionicons name="chevron-forward" size={14} color={COLORS.primary} />
                     </View>
                   </View>
                 </View>
@@ -900,9 +880,8 @@ export default function ScheduleScreen({ navigation, route }: any) {
                       </View>
                       
                       <TouchableOpacity 
-                        style={[styles.payNowButton, isOffline && styles.disabledPayNowButton]}
-                        onPress={async () => handlePaymentFromPending(appointment)}
-                        disabled={isOffline}
+                        style={styles.payNowButton}
+                        onPress={() => handlePaymentFromPending(appointment)}
                       >
                         <Text style={styles.payNowText}>PAGAR AHORA</Text>
                         <Ionicons name="card-outline" size={16} color={COLORS.white} />
@@ -1172,12 +1151,11 @@ export default function ScheduleScreen({ navigation, route }: any) {
 
                 {selectedAppointment.estado === 'pendiente' && !selectedAppointment.tienePago && (
                   <TouchableOpacity 
-                    style={[detailsModalStyles.payButton, isOffline && detailsModalStyles.payButtonDisabled]}
-                    onPress={async () => {
+                    style={detailsModalStyles.payButton}
+                    onPress={() => {
                       setDetailsModalVisible(false);
-                      await handlePaymentFromPending(selectedAppointment);
+                      handlePaymentFromPending(selectedAppointment);
                     }}
-                    disabled={isOffline}
                   >
                     <Text style={detailsModalStyles.payButtonText}>PAGAR AHORA</Text>
                     <Ionicons name="card-outline" size={18} color={COLORS.white} />
@@ -1199,108 +1177,181 @@ export default function ScheduleScreen({ navigation, route }: any) {
       {/* MODAL DE PAGO */}
       <Modal visible={paymentStep !== 'selection'} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.paymentCard}>
-            {paymentStep === 'checkout' && citaId ? (
-              <>
-                <Text style={styles.modalTitle}>Resumen de la Cita</Text>
-                
-                <View style={styles.receiptContainer}>
-                  <View style={styles.receiptLine}>
-                    <Text style={styles.receiptLabel}>Especialista:</Text>
-                    <Text style={styles.receiptValue}>{selectedDoctor?.name || 'Nutriólogo'}</Text>
+          <KeyboardAvoidingView
+            style={styles.paymentKeyboardContainer}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+          >
+            <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+              <View style={styles.paymentKeyboardContent}>
+                <ScrollView
+                  style={styles.paymentScrollView}
+                  contentContainerStyle={styles.paymentScrollContent}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                >
+                  <View style={styles.paymentCard}>
+                    {paymentStep === 'checkout' && citaId ? (
+                      <>
+                        <Text style={styles.modalTitle}>Resumen de la Cita</Text>
+                        
+                        <View style={styles.receiptContainer}>
+                          <View style={styles.receiptLine}>
+                            <Text style={styles.receiptLabel}>Especialista:</Text>
+                            <Text style={styles.receiptValue}>{selectedDoctor?.name || 'Nutriólogo'}</Text>
+                          </View>
+                          <View style={styles.receiptLine}>
+                            <Text style={styles.receiptLabel}>Servicio:</Text>
+                            <Text style={styles.receiptValue}>Consulta Nutricional</Text>
+                          </View>
+                          <View style={styles.divider} />
+                          <View style={styles.receiptLine}>
+                            <Text style={styles.totalLabel}>Total a pagar:</Text>
+                            <Text style={styles.totalValue}>
+                              ${selectedDoctor?.price ? selectedDoctor.price.toLocaleString('es-MX') : '0.00'} MXN
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={paymentStyles.paymentContainer}>
+                          <Text style={paymentStyles.paymentTitle}>Método de pago</Text>
+                          <Text style={paymentStyles.secureLabel}>Tarjetas seguras y encriptadas</Text>
+
+                          <View style={paymentStyles.brandsContainer}>
+                            <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2a/Visa_2021.svg/1200px-Visa_2021.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
+                            <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/MasterCard_Logo.svg/1200px-MasterCard_Logo.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
+                            <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/American_Express_logo.svg/1200px-American_Express_logo.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
+                          </View>
+
+                          <CardField
+                            postalCodeEnabled={false}
+                            placeholders={{ number: '1234 1234 1234 1234' }}
+                            cardStyle={{
+                              backgroundColor: PAYMENT_COLORS.cardBg,
+                              textColor: PAYMENT_COLORS.label,
+                              placeholderColor: PAYMENT_COLORS.placeholder,
+                            }}
+                            style={paymentStyles.cardField}
+                            onCardChange={(details) => setCardDetails(details)}
+                          />
+
+                          <Text style={paymentStyles.label}>Nombre del destinatario</Text>
+                          <TextInput
+                            style={paymentStyles.input}
+                            placeholder="Nombre completo"
+                            placeholderTextColor={PAYMENT_COLORS.placeholder}
+                            value={cardName}
+                            onChangeText={setCardName}
+                            autoCapitalize="words"
+                            returnKeyType="done"
+                            onSubmitEditing={Keyboard.dismiss}
+                          />
+
+                          {paymentError && (
+                            <Text style={paymentStyles.errorText}>{paymentError}</Text>
+                          )}
+
+                          <TouchableOpacity 
+                            style={paymentStyles.payButton}
+                            onPress={handlePayment}
+                            disabled={isProcessing || !cardName.trim()}
+                          >
+                            {isProcessing ? (
+                              <ActivityIndicator color={PAYMENT_COLORS.buttonText} size="small" />
+                            ) : (
+                              <Text style={paymentStyles.payButtonText}>
+                                Pagar ${selectedDoctor?.price ? selectedDoctor.price.toLocaleString('es-MX') : '0.00'} MXN
+                              </Text>
+                            )}
+                          </TouchableOpacity>
+
+                          <Text style={paymentStyles.termsText}>
+                            Al pagar aceptas los Términos y Condiciones.
+                          </Text>
+                        </View>
+
+                        <TouchableOpacity onPress={closeModal} style={styles.cancelButton} disabled={isProcessing}>
+                          <Text style={styles.cancelButtonText}>CANCELAR</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <View style={styles.successContainer}>
+                        <View style={styles.successIconCircle}>
+                          <Ionicons name="checkmark-sharp" size={60} color={COLORS.white} />
+                        </View>
+                        <Text style={styles.successTitle}>¡Pago Completado!</Text>
+                        <Text style={styles.successMsg}>Tu transacción ha sido procesada con éxito.</Text>
+                        
+                        <TouchableOpacity 
+                          style={styles.finalButton} 
+                          onPress={() => {
+                            closeModal();
+                            setViewMode('pendientes');
+                          }}
+                        >
+                          <Text style={styles.finalButtonText}>VER CITAS PENDIENTES</Text>
+                          <Ionicons name="time-outline" size={20} color={COLORS.white} style={{marginLeft: 10}} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
-                  <View style={styles.receiptLine}>
-                    <Text style={styles.receiptLabel}>Servicio:</Text>
-                    <Text style={styles.receiptValue}>Consulta Nutricional</Text>
-                  </View>
-                  <View style={styles.divider} />
-                  <View style={styles.receiptLine}>
-                    <Text style={styles.totalLabel}>Total a pagar:</Text>
-                    <Text style={styles.totalValue}>
-                      ${selectedDoctor?.price ? selectedDoctor.price.toLocaleString('es-MX') : '0.00'} MXN
-                    </Text>
-                  </View>
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* MODAL INFORMATIVO - YA TIENES NUTRIÓLOGO ASIGNADO */}
+      <Modal
+        visible={nutriologoAssignedModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setNutriologoAssignedModal(false)}
+      >
+        <View style={detailsModalStyles.overlay}>
+          <View style={[detailsModalStyles.container, detailsModalStyles.assignedContainer]}>
+            <View style={[detailsModalStyles.header, detailsModalStyles.assignedWarningHeader]}>
+              <View style={detailsModalStyles.headerIcon}>
+                <Ionicons name="alert-circle" size={24} color={COLORS.white} />
+              </View>
+              <Text style={detailsModalStyles.headerTitle}>Nutriólogo asignado</Text>
+              <TouchableOpacity 
+                onPress={() => setNutriologoAssignedModal(false)}
+                style={detailsModalStyles.closeButton}
+              >
+                <Ionicons name="close" size={20} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={detailsModalStyles.content}>
+              <View style={detailsModalStyles.assignedContent}> 
+                <View style={detailsModalStyles.assignedWarningBadgeCircle}>
+                  <Ionicons name="medical" size={30} color={COLORS.warning} />
                 </View>
 
-                <View style={paymentStyles.paymentContainer}>
-                  <Text style={paymentStyles.paymentTitle}>Método de pago</Text>
-                  <Text style={paymentStyles.secureLabel}>Tarjetas seguras y encriptadas</Text>
+                <Text style={detailsModalStyles.assignedLabel}>
+                  Actualmente tu nutriólogo de cabecera es:
+                </Text>
 
-                  <View style={paymentStyles.brandsContainer}>
-                    <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2a/Visa_2021.svg/1200px-Visa_2021.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
-                    <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/MasterCard_Logo.svg/1200px-MasterCard_Logo.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
-                    <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/American_Express_logo.svg/1200px-American_Express_logo.svg.png' }} style={paymentStyles.brandIcon} resizeMode="contain" />
-                  </View>
-
-                  <CardField
-                    postalCodeEnabled={false}
-                    placeholders={{ number: '1234 1234 1234 1234' }}
-                    cardStyle={{
-                      backgroundColor: PAYMENT_COLORS.cardBg,
-                      textColor: PAYMENT_COLORS.label,
-                      placeholderColor: PAYMENT_COLORS.placeholder,
-                    }}
-                    style={paymentStyles.cardField}
-                    onCardChange={(details) => setCardDetails(details)}
-                  />
-
-                  <Text style={paymentStyles.label}>Nombre del destinatario</Text>
-                  <TextInput
-                    style={paymentStyles.input}
-                    placeholder="Nombre completo"
-                    placeholderTextColor={PAYMENT_COLORS.placeholder}
-                    value={cardName}
-                    onChangeText={setCardName}
-                    autoCapitalize="words"
-                  />
-
-                  {paymentError && (
-                    <Text style={paymentStyles.errorText}>{paymentError}</Text>
-                  )}
-
-                  <TouchableOpacity 
-                    style={[paymentStyles.payButton, isOffline && paymentStyles.payButtonDisabled]}
-                    onPress={handlePayment}
-                    disabled={isOffline || isProcessing || !cardName.trim()}
-                  >
-                    {isProcessing ? (
-                      <ActivityIndicator color={PAYMENT_COLORS.buttonText} size="small" />
-                    ) : (
-                      <Text style={paymentStyles.payButtonText}>
-                        Pagar ${selectedDoctor?.price ? selectedDoctor.price.toLocaleString('es-MX') : '0.00'} MXN
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-
-                  <Text style={paymentStyles.termsText}>
-                    Al pagar aceptas los Términos y Condiciones.
+                <View style={detailsModalStyles.assignedDoctorPill}>
+                  <Text style={detailsModalStyles.assignedDoctorName}>
+                    Dr. {nutriologo?.nombre} {nutriologo?.apellido}
                   </Text>
                 </View>
-
-                <TouchableOpacity onPress={closeModal} style={styles.cancelButton} disabled={isProcessing}>
-                  <Text style={styles.cancelButtonText}>CANCELAR</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <View style={styles.successContainer}>
-                <View style={styles.successIconCircle}>
-                  <Ionicons name="checkmark-sharp" size={60} color={COLORS.white} />
-                </View>
-                <Text style={styles.successTitle}>¡Pago Completado!</Text>
-                <Text style={styles.successMsg}>Tu transacción ha sido procesada con éxito.</Text>
                 
-                <TouchableOpacity 
-                  style={styles.finalButton} 
-                  onPress={() => {
-                    closeModal();
-                    setViewMode('pendientes');
-                  }}
-                >
-                  <Text style={styles.finalButtonText}>VER CITAS PENDIENTES</Text>
-                  <Ionicons name="time-outline" size={20} color={COLORS.white} style={{marginLeft: 10}} />
-                </TouchableOpacity>
+                <Text style={detailsModalStyles.assignedMessage}>
+                  No puedes agendar con otro nutriólogo hasta desasignarte.
+                </Text>
               </View>
-            )}
+
+              <TouchableOpacity 
+                style={detailsModalStyles.closeButton2}
+                onPress={() => setNutriologoAssignedModal(false)}
+              >
+                <Text style={detailsModalStyles.closeButtonText}>ENTENDIDO</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1332,10 +1383,16 @@ export default function ScheduleScreen({ navigation, route }: any) {
                 <View style={detailsModalStyles.assignedBadgeCircle}>
                   <Ionicons name="medical" size={30} color={COLORS.success} />
                 </View>
-                
-                <Text style={detailsModalStyles.assignedDoctorName}>
-                  {selectedDoctor?.name || 'Este nutriólogo'}
+
+                <Text style={detailsModalStyles.assignedLabel}>
+                  Actualmente tu nutriólogo de cabecera es:
                 </Text>
+
+                <View style={detailsModalStyles.assignedDoctorPill}>
+                  <Text style={detailsModalStyles.assignedDoctorName}>
+                    {selectedDoctor?.name || 'Este nutriólogo'}
+                  </Text>
+                </View>
                 
                 <Text style={detailsModalStyles.assignedMessage}>
                   Ya es tu nutriólogo de cabecera. Puedes agendar otra consulta directamente.
@@ -1354,7 +1411,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
       </Modal>
     </SafeAreaView>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.secondary },
@@ -1422,27 +1479,7 @@ const styles = StyleSheet.create({
   doctorsSummaryTitle: { fontSize: 14, fontWeight: '800', color: COLORS.textDark },
   doctorsSummarySubtext: { fontSize: 12, color: COLORS.textLight, marginTop: 2 },
 
-  offlineReadOnlyCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: COLORS.warning,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
-  },
-  offlineReadOnlyText: {
-    flex: 1,
-    fontSize: 12,
-    color: COLORS.textLight,
-    fontWeight: '700',
-  },
-
   doctorCard: { backgroundColor: COLORS.white, padding: 16, borderRadius: 20, marginBottom: 12, flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderColor: COLORS.border, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 4 },
-  disabledDoctorCard: { opacity: 0.8 },
   avatarContainer: { width: 58, height: 58, borderRadius: 18, backgroundColor: COLORS.secondary, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden' },
   doctorInfo: { flex: 1, marginLeft: 14 },
   doctorTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -1460,8 +1497,6 @@ const styles = StyleSheet.create({
   priceText: { fontWeight: '900', color: COLORS.primary, fontSize: 14 },
   doctorActionPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: COLORS.primary, backgroundColor: COLORS.white },
   doctorActionText: { fontSize: 11, color: COLORS.primary, fontWeight: '900' },
-  disabledActionPill: { borderColor: COLORS.border, backgroundColor: COLORS.secondary },
-  disabledActionText: { color: COLORS.textLight },
 
   appointmentsSection: { marginTop: 30, marginBottom: 20 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 15 },
@@ -1488,7 +1523,6 @@ const styles = StyleSheet.create({
   viewDetailsButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.secondary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: COLORS.primary },
   viewDetailsText: { fontSize: 12, color: COLORS.primary, fontWeight: '800', marginRight: 4 },
   payNowButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, gap: 6 },
-  disabledPayNowButton: { backgroundColor: COLORS.border },
   payNowText: { fontSize: 12, color: COLORS.white, fontWeight: '900' },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 4 },
   pendingPaymentBadge: { backgroundColor: COLORS.pendingPaymentLight, borderWidth: 1, borderColor: COLORS.pendingPayment },
@@ -1502,6 +1536,10 @@ const styles = StyleSheet.create({
   emptyAppointmentsSubtext: { fontSize: 13, color: COLORS.textLight, marginTop: 8, textAlign: 'center', fontWeight: '600' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(26, 48, 38, 0.85)', justifyContent: 'flex-end' },
+  paymentKeyboardContainer: { flex: 1, justifyContent: 'flex-end' },
+  paymentKeyboardContent: { flex: 1, justifyContent: 'flex-end' },
+  paymentScrollView: { flex: 1 },
+  paymentScrollContent: { flexGrow: 1, justifyContent: 'flex-end' },
   paymentCard: { backgroundColor: COLORS.white, borderTopLeftRadius: 35, borderTopRightRadius: 35, padding: 30, minHeight: 500, alignItems: 'center' },
   modalTitle: { fontSize: 22, fontWeight: '900', color: COLORS.textDark, marginBottom: 25 },
   receiptContainer: { width: '100%', backgroundColor: COLORS.secondary, padding: 20, borderRadius: 20, borderWidth: 1, borderColor: COLORS.border, marginBottom: 25 },
@@ -1701,9 +1739,6 @@ const detailsModalStyles = StyleSheet.create({
     marginBottom: 12,
     gap: 8,
   },
-  payButtonDisabled: {
-    backgroundColor: COLORS.border,
-  },
   payButtonText: {
     color: COLORS.white,
     fontSize: 16,
@@ -1727,9 +1762,28 @@ const detailsModalStyles = StyleSheet.create({
   assignedHeader: {
     backgroundColor: COLORS.success,
   },
+  assignedWarningHeader: {
+    backgroundColor: COLORS.warning,
+  },
   assignedContent: {
     alignItems: 'center',
     marginBottom: 16,
+  },
+  assignedLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.textLight,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  assignedDoctorPill: {
+    backgroundColor: COLORS.secondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
   },
   assignedBadgeCircle: {
     width: 64,
@@ -1742,12 +1796,22 @@ const detailsModalStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.success,
   },
+  assignedWarningBadgeCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: COLORS.pendingPaymentLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.warning,
+  },
   assignedDoctorName: {
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '900',
     color: COLORS.primary,
     textAlign: 'center',
-    marginBottom: 6,
   },
   assignedMessage: {
     fontSize: 14,
@@ -1818,9 +1882,6 @@ const paymentStyles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 12,
-  },
-  payButtonDisabled: {
-    backgroundColor: PAYMENT_COLORS.border,
   },
   payButtonText: {
     color: PAYMENT_COLORS.buttonText,

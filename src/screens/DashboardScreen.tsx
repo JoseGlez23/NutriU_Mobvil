@@ -44,34 +44,7 @@ const COLORS = {
   pending: '#FFC107',
 };
 
-const TIMEZONE = 'America/Hermosillo'; // San Luis Río Colorado, Sonora
-
-const parseDbTimestampAsUtc = (value: string) => {
-  const baseValue = String(value || '').trim().replace(' ', 'T');
-  const hasTimezone = /([zZ]|[+\-]\d{2}(?::?\d{2})?)$/.test(baseValue);
-
-  if (hasTimezone) {
-    return new Date(baseValue);
-  }
-
-  const match = baseValue.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?$/);
-  if (!match) {
-    return new Date(`${baseValue}Z`);
-  }
-
-  const [, year, month, day, hour, minute, second = '00', millis = '0'] = match;
-  const milliseconds = Number(millis.padEnd(3, '0'));
-
-  return new Date(Date.UTC(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second),
-    milliseconds,
-  ));
-};
+const TIMEZONE = 'America/Hermosillo'; // SaYA SE SUBIO WE PORFIN ALV
 
 // Componentes de animación (sin cambios)
 const FloatingIcons = () => {
@@ -122,8 +95,28 @@ const NotificationBell = ({ onPress, unreadCount }: any) => (
   </TouchableOpacity>
 );
 
-const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onClearAll, onAcceptAppointment, onRejectAppointment, onGoToPayment, onDenyAppointment }: any) => {
+const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onClearAll, onAcceptAppointment, onRejectAppointment, onGoToPayment, onDenyAppointment, onViewNotification }: any) => {
+  const isPointsNotification = (item: any) => {
+    const subtipo = item?.datos_adicionales?.subtipo;
+    if (subtipo === 'puntos_asignados') return true;
+
+    const title = String(item?.titulo || '').toLowerCase();
+    const message = String(item?.mensaje || '').toLowerCase();
+    return title.includes('puntos') || message.includes('puntos');
+  };
+
+  const isDietNotification = (item: any) => {
+    const subtipo = item?.datos_adicionales?.subtipo;
+    if (subtipo === 'dieta_asignada') return true;
+
+    const title = String(item?.titulo || '').toLowerCase();
+    const message = String(item?.mensaje || '').toLowerCase();
+    return title.includes('dieta') || message.includes('plan nutricional') || message.includes('dieta');
+  };
+
   const isPendingPaymentNotification = (item: any) => {
+    if (isPointsNotification(item) || isDietNotification(item)) return false;
+
     const estado = item.estado || item.datos_adicionales?.estado;
     return (
       item.tipo === 'cita_pendiente_pago' ||
@@ -134,16 +127,20 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
     );
   };
 
+  const isViewOnlyNotification = (item: any) => {
+    return isDietNotification(item) || isPointsNotification(item);
+  };
+
   const renderNotification = ({ item }: any) => (
     <View style={[styles.notificationItem, !item.leida && styles.unreadNotification]}>
       <TouchableOpacity 
         style={styles.notificationContent}
-        onPress={() => onMarkAsRead(item.id_notificacion)}
+        onPress={() => onMarkAsRead(item)}
         activeOpacity={0.7}
       >
         <View style={styles.notificationIcon}>
           <Ionicons 
-            name={getNotificationIcon(item.tipo)} 
+            name={getNotificationIcon(item)} 
             size={24} 
             color={item.leida ? COLORS.textLight : COLORS.primary} 
           />
@@ -157,7 +154,7 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
       </TouchableOpacity>
       
       {/* Decisión para citas pendientes de pago */}
-      {isPendingPaymentNotification(item) && (
+      {isPendingPaymentNotification(item) && !isViewOnlyNotification(item) && (
         <View style={styles.notificationActions}>
           <TouchableOpacity
             style={[styles.actionButton, styles.acceptButton]}
@@ -177,7 +174,7 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
       )}
 
       {/* Compatibilidad con flujo anterior */}
-      {!isPendingPaymentNotification(item) && item.tipo === 'cita' && item.estado === 'pendiente' && (
+      {!isPendingPaymentNotification(item) && !isViewOnlyNotification(item) && item.tipo === 'cita' && item.estado === 'pendiente' && (
         <View style={styles.notificationActions}>
           <TouchableOpacity 
             style={[styles.actionButton, styles.acceptButton]}
@@ -195,14 +192,31 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
           </TouchableOpacity>
         </View>
       )}
+
+      {isViewOnlyNotification(item) && (
+        <View style={styles.notificationActions}>
+          <TouchableOpacity
+            style={[styles.actionButton, styles.acceptButton]}
+            onPress={() => onViewNotification(item)}
+          >
+            <Ionicons name="eye-outline" size={20} color={COLORS.white} />
+            <Text style={styles.actionButtonText}>Ver</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 
-  const getNotificationIcon = (tipo: string) => {
+  const getNotificationIcon = (notification: any) => {
+    const tipo = notification?.tipo;
+    const subtipo = notification?.datos_adicionales?.subtipo;
+
     switch(tipo) {
       case 'cita': return 'calendar-outline';
       case 'cita_pendiente_pago': return 'card-outline';
       case 'pago': return 'card-outline';
+      case 'bienvenida_nutriologo': return 'person-outline';
+      case 'sistema': return subtipo === 'bienvenida_nutriologo' ? 'person-outline' : 'notifications-outline';
       case 'meta': return 'trophy-outline';
       case 'recordatorio': return 'alarm-outline';
       default: return 'notifications-outline';
@@ -265,7 +279,7 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
 
 export default function DashboardScreen({ navigation }: any) {
   const { user, refreshUserData, error: userError } = useUser();
-  const { refreshNutriologo } = useNutriologo();
+  const { refreshNutriologo, nutriologo, estadoNutriologo, loading: loadingNutriologo } = useNutriologo();
   const { profileImage } = useProfileImage();
   const { notifyOffline } = useNetwork();
   const [refreshing, setRefreshing] = useState(false);
@@ -279,7 +293,59 @@ export default function DashboardScreen({ navigation }: any) {
   // Estado para notificaciones desde Supabase
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loadingNotifications, setLoadingNotifications] = useState(false);
+  const [appointmentDecisionModal, setAppointmentDecisionModal] = useState<{
+    visible: boolean;
+    mode: 'rechazar' | 'denegar';
+    title: string;
+    message: string;
+    confirmText: string;
+    notification: any | null;
+  }>({
+    visible: false,
+    mode: 'rechazar',
+    title: '',
+    message: '',
+    confirmText: 'Confirmar',
+    notification: null,
+  });
+  const [appointmentFeedbackModal, setAppointmentFeedbackModal] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    icon: 'checkmark-circle-outline' | 'close-circle-outline';
+    color: string;
+  }>({
+    visible: false,
+    title: '',
+    message: '',
+    icon: 'checkmark-circle-outline',
+    color: COLORS.accept,
+  });
+  const [isProcessingAppointmentAction, setIsProcessingAppointmentAction] = useState(false);
   const navigationLockRef = useRef(false);
+
+  const closeAppointmentDecisionModal = () => {
+    if (isProcessingAppointmentAction) return;
+    setAppointmentDecisionModal((prev) => ({ ...prev, visible: false, notification: null }));
+  };
+
+  const closeAppointmentFeedbackModal = () => {
+    setAppointmentFeedbackModal((prev) => ({ ...prev, visible: false }));
+  };
+
+  const showAppointmentFeedback = (
+    title: string,
+    message: string,
+    isError = false
+  ) => {
+    setAppointmentFeedbackModal({
+      visible: true,
+      title,
+      message,
+      icon: isError ? 'close-circle-outline' : 'checkmark-circle-outline',
+      color: isError ? COLORS.reject : COLORS.accept,
+    });
+  };
 
   const safeNavigate = useCallback((routeName: string, params?: any) => {
     if (navigationLockRef.current) return;
@@ -344,86 +410,117 @@ export default function DashboardScreen({ navigation }: any) {
   }, [user]);
 
   const appendPendingPaymentNotifications = useCallback(async (baseNotifications: any[]) => {
-    if (!user?.id_paciente) return baseNotifications;
+    return sortNotificationsByDate(baseNotifications);
+  }, []);
 
-    const { data, error } = await supabase
-      .from('citas')
-      .select(`
-        id_cita,
-        fecha_hora,
-        estado,
-        nutriologos!inner (
-          id_nutriologo,
-          nombre,
-          apellido,
-          tarifa_consulta
-        ),
-        pagos!left (
-          id_pago,
-          estado
-        )
-      `)
-      .eq('id_paciente', user.id_paciente)
-      .eq('estado', 'pendiente')
-      .order('fecha_hora', { ascending: false });
+  const ensureNutriologoAssignmentNotifications = useCallback(async () => {
+    if (!user?.id_paciente) return;
 
-    if (error) throw error;
+    try {
+      const patientId = user.id_paciente;
 
-    const pendingWithoutPayment = (data || []).filter((cita: any) => {
-      const paymentCompleted = cita.pagos && cita.pagos.length > 0 && cita.pagos[0]?.estado === 'completado';
-      return !paymentCompleted;
-    });
+      const { data: latestActiveDiet } = await supabase
+        .from('dietas')
+        .select('id_dieta, nombre_dieta, created_at')
+        .eq('id_paciente', patientId)
+        .eq('activa', true)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    const extras = pendingWithoutPayment
-      .filter((cita: any) => {
-        const citaId = Number(cita.id_cita);
-        return !baseNotifications.some((notification: any) =>
-          Number(notification?.datos_adicionales?.id_cita) === citaId &&
-          (
-            notification.tipo === 'cita_pendiente_pago' ||
-            notification.tipo === 'pago' ||
-            notification?.datos_adicionales?.requiere_pago === true ||
-            notification.estado === 'pendiente_pago'
-          )
+      if (latestActiveDiet?.id_dieta) {
+        const { data: existingDietNotification } = await supabase
+          .from('notificaciones')
+          .select('id_notificacion')
+          .eq('id_usuario', patientId)
+          .eq('tipo_usuario', 'paciente')
+          .eq('datos_adicionales->>subtipo', 'dieta_asignada')
+          .eq('datos_adicionales->>id_dieta', String(latestActiveDiet.id_dieta))
+          .limit(1);
+
+        if (!existingDietNotification || existingDietNotification.length === 0) {
+          const { error: insertDietNotificationError } = await supabase
+            .from('notificaciones')
+            .insert({
+              id_usuario: patientId,
+              tipo_usuario: 'paciente',
+              titulo: 'Nueva dieta asignada',
+              mensaje: 'Tu nutriólogo te asignó una dieta. Toca para verla en Nutrición.',
+              tipo: 'recordatorio',
+              leida: false,
+              fecha_envio: new Date().toISOString(),
+              datos_adicionales: {
+                subtipo: 'dieta_asignada',
+                id_dieta: latestActiveDiet.id_dieta,
+                destino: 'FoodTracking',
+              },
+            });
+
+          if (insertDietNotificationError) {
+            console.warn('No se pudo crear notificación de dieta asignada:', insertDietNotificationError.message);
+          }
+        }
+      }
+
+      const { data: potentialAssignedPointsLogs, error: pointsLogsError } = await supabase
+        .from('log_puntos')
+        .select('id_log, puntos, descripcion, fecha, tipo_accion')
+        .eq('id_paciente', patientId)
+        .gt('puntos', 0)
+        .eq('tipo_accion', 'otro')
+        .order('fecha', { ascending: false })
+        .limit(20);
+
+      if (pointsLogsError) throw pointsLogsError;
+
+      if (potentialAssignedPointsLogs && potentialAssignedPointsLogs.length > 0) {
+        const { data: existingPointsNotifications, error: existingPointsNotificationsError } = await supabase
+          .from('notificaciones')
+          .select('datos_adicionales')
+          .eq('id_usuario', patientId)
+          .eq('tipo_usuario', 'paciente')
+          .eq('datos_adicionales->>subtipo', 'puntos_asignados');
+
+        if (existingPointsNotificationsError) throw existingPointsNotificationsError;
+
+        const existingLogIds = new Set(
+          (existingPointsNotifications || [])
+            .map((item: any) => String(item?.datos_adicionales?.id_log || ''))
+            .filter(Boolean)
         );
-      })
-      .map((cita: any) => {
-        const nutri = cita.nutriologos;
-        const doctorName = `Dr. ${nutri.nombre} ${nutri.apellido}`;
-        const amount = nutri.tarifa_consulta || 800;
-        const citaDate = parseDbTimestampAsUtc(cita.fecha_hora);
 
-        const formattedDate = citaDate.toLocaleString('es-MX', {
-          timeZone: TIMEZONE,
-          weekday: 'short',
-          day: 'numeric',
-          month: 'short',
-          hour: 'numeric',
-          minute: '2-digit',
-        });
+        const newPointNotifications = potentialAssignedPointsLogs
+          .filter((log: any) => !existingLogIds.has(String(log.id_log)))
+          .map((log: any) => ({
+            id_usuario: patientId,
+            tipo_usuario: 'paciente',
+            titulo: 'Puntos asignados',
+            mensaje: `Tu nutriólogo te asignó ${log.puntos} puntos. Toca para ver tus puntos acumulados.`,
+            tipo: 'meta',
+            leida: false,
+            fecha_envio: log.fecha || new Date().toISOString(),
+            datos_adicionales: {
+              subtipo: 'puntos_asignados',
+              id_log: log.id_log,
+              puntos: log.puntos,
+              descripcion: log.descripcion,
+              destino: 'Points',
+            },
+          }));
 
-        return {
-          id_notificacion: `pending-payment-${cita.id_cita}`,
-          id_usuario: user.id_paciente,
-          tipo_usuario: 'paciente',
-          titulo: 'Cita pendiente de pago',
-          mensaje: `Tu cita con ${doctorName} del ${formattedDate} está pendiente de pago.`,
-          tipo: 'cita_pendiente_pago',
-          estado: 'pendiente_pago',
-          leida: false,
-          fecha_envio: citaDate.toISOString(),
-          datos_adicionales: {
-            id_cita: cita.id_cita,
-            id_nutriologo: nutri.id_nutriologo,
-            doctor_nombre: doctorName,
-            precio: amount,
-            requiere_pago: true,
-            estado: 'pendiente_pago',
-          },
-        };
-      });
+        if (newPointNotifications.length > 0) {
+          const { error: insertPointsNotificationsError } = await supabase
+            .from('notificaciones')
+            .insert(newPointNotifications);
 
-    return sortNotificationsByDate([...extras, ...baseNotifications]);
+          if (insertPointsNotificationsError) {
+            console.warn('No se pudo crear notificación de puntos asignados:', insertPointsNotificationsError.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error sincronizando notificaciones de dieta/puntos:', error);
+    }
   }, [user]);
 
   // Cargar notificaciones desde Supabase
@@ -432,6 +529,8 @@ export default function DashboardScreen({ navigation }: any) {
 
     setLoadingNotifications(true);
     try {
+      await ensureNutriologoAssignmentNotifications();
+
       const { data, error } = await supabase
         .from('notificaciones')
         .select('*')
@@ -451,7 +550,7 @@ export default function DashboardScreen({ navigation }: any) {
     } finally {
       setLoadingNotifications(false);
     }
-  }, [user, appendPendingPaymentNotifications, notifyOffline]);
+  }, [user, appendPendingPaymentNotifications, ensureNutriologoAssignmentNotifications, notifyOffline]);
 
   // Cargar notificaciones cuando el usuario esté disponible
   useEffect(() => {
@@ -491,17 +590,38 @@ export default function DashboardScreen({ navigation }: any) {
   // Funciones para manejar notificaciones
   const unreadCount = notifications.filter(n => !n.leida).length;
 
-  const markAsRead = async (id: number) => {
+  const markAsRead = async (id: any) => {
+    const targetNotification = notifications.find(notif => notif.id_notificacion === id);
+    const shouldRemoveOnRead =
+      targetNotification?.tipo === 'bienvenida_nutriologo' ||
+      targetNotification?.datos_adicionales?.subtipo === 'bienvenida_nutriologo';
+
     if (typeof id !== 'number') {
-      setNotifications(prev =>
-        prev.map(notif =>
-          notif.id_notificacion === id ? { ...notif, leida: true } : notif
-        )
-      );
+      if (shouldRemoveOnRead) {
+        setNotifications(prev => prev.filter(notif => notif.id_notificacion !== id));
+      } else {
+        setNotifications(prev =>
+          prev.map(notif =>
+            notif.id_notificacion === id ? { ...notif, leida: true } : notif
+          )
+        );
+      }
       return;
     }
 
     try {
+      if (shouldRemoveOnRead) {
+        const { error } = await supabase
+          .from('notificaciones')
+          .delete()
+          .eq('id_notificacion', id);
+
+        if (error) throw error;
+
+        setNotifications(prev => prev.filter(notif => notif.id_notificacion !== id));
+        return;
+      }
+
       const { error } = await supabase
         .from('notificaciones')
         .update({ 
@@ -520,6 +640,30 @@ export default function DashboardScreen({ navigation }: any) {
     } catch (error) {
       console.error('Error marcando notificación como leída:', error);
     }
+  };
+
+  const handleNotificationPress = async (notification: any) => {
+    const subtipo = notification?.datos_adicionales?.subtipo;
+    const title = String(notification?.titulo || '').toLowerCase();
+    const message = String(notification?.mensaje || '').toLowerCase();
+    const isPointsByText = title.includes('puntos') || message.includes('puntos');
+    const isDietByText = title.includes('dieta') || message.includes('plan nutricional') || message.includes('dieta');
+
+    if (subtipo === 'dieta_asignada' || isDietByText) {
+      await markAsRead(notification.id_notificacion);
+      setNotificationsVisible(false);
+      safeNavigate('FoodTracking');
+      return;
+    }
+
+    if (subtipo === 'puntos_asignados' || isPointsByText) {
+      await markAsRead(notification.id_notificacion);
+      setNotificationsVisible(false);
+      safeNavigate('Points');
+      return;
+    }
+
+    await markAsRead(notification.id_notificacion);
   };
 
   const handleGoToPayment = async (notification: any) => {
@@ -546,103 +690,115 @@ export default function DashboardScreen({ navigation }: any) {
     safeNavigate('Schedule', { initialTab: 'pendientes' });
   };
 
-  const handleDenyAppointment = (notification: any) => {
+  const executeDenyAppointment = async (notification: any) => {
     const datos = notification?.datos_adicionales || {};
     const citaId = Number(datos.id_cita);
     const nutriologoId = Number(datos.id_nutriologo);
 
-    Alert.alert(
-      'Denegar cita',
-      'Si deniegas esta cita, el nutriólogo ya no podrá ver tu información y podrás agendar de nuevo con el mismo u otro nutriólogo. ¿Deseas continuar?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Denegar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              let resolvedNutriologoId = nutriologoId;
+    try {
+      let resolvedNutriologoId = nutriologoId;
 
-              if (!resolvedNutriologoId && citaId) {
-                const { data: citaData, error: citaNutriError } = await supabase
-                  .from('citas')
-                  .select('id_nutriologo')
-                  .eq('id_cita', citaId)
-                  .maybeSingle();
+      if (!resolvedNutriologoId && citaId) {
+        const { data: citaData, error: citaNutriError } = await supabase
+          .from('citas')
+          .select('id_nutriologo')
+          .eq('id_cita', citaId)
+          .maybeSingle();
 
-                if (citaNutriError) throw citaNutriError;
-                resolvedNutriologoId = Number(citaData?.id_nutriologo || 0);
-              }
+        if (citaNutriError) throw citaNutriError;
+        resolvedNutriologoId = Number(citaData?.id_nutriologo || 0);
+      }
 
-              if (citaId) {
-                let citaQuery = supabase
-                  .from('citas')
-                  .update({ estado: 'cancelada' })
-                  .eq('id_paciente', user?.id_paciente)
-                  .in('estado', ['pendiente', 'pagada']);
+      if (citaId) {
+        let citaQuery = supabase
+          .from('citas')
+          .update({ estado: 'cancelada' })
+          .eq('id_paciente', user?.id_paciente)
+          .in('estado', ['pendiente', 'pagada']);
 
-                if (resolvedNutriologoId) {
-                  citaQuery = citaQuery.eq('id_nutriologo', resolvedNutriologoId);
-                } else {
-                  citaQuery = citaQuery.eq('id_cita', citaId);
-                }
-
-                const { error: citaError } = await citaQuery;
-
-                if (citaError) throw citaError;
-              }
-
-              if (user?.id_paciente) {
-                let relationQuery = supabase
-                  .from('paciente_nutriologo')
-                  .update({ activo: false })
-                  .eq('id_paciente', user.id_paciente)
-                  .eq('activo', true);
-
-                if (resolvedNutriologoId) {
-                  relationQuery = relationQuery.eq('id_nutriologo', resolvedNutriologoId);
-                }
-
-                const { error: relationError } = await relationQuery;
-
-                if (relationError) throw relationError;
-
-                const { success: plansCleared, error: clearPlansError } = await patientPlanService.clearActivePlans(user.id_paciente);
-                if (!plansCleared) {
-                  throw new Error(clearPlansError || 'No se pudieron limpiar dieta y rutina activas');
-                }
-              }
-
-              if (user?.id_paciente) {
-                const { error: clearError } = await supabase
-                  .from('notificaciones')
-                  .delete()
-                  .eq('id_usuario', user.id_paciente)
-                  .eq('tipo_usuario', 'paciente');
-
-                if (clearError) throw clearError;
-              }
-
-              setNotifications([]);
-              await refreshNutriologo();
-
-              Alert.alert(
-                'Cita denegada',
-                'El nutriólogo ya no verá tu información. Puedes agendar nuevamente cuando quieras.'
-              );
-            } catch (error) {
-              console.error('Error denegando cita:', error);
-              Alert.alert('Error', 'No se pudo denegar la cita. Intenta nuevamente.');
-            }
-          }
+        if (resolvedNutriologoId) {
+          citaQuery = citaQuery.eq('id_nutriologo', resolvedNutriologoId);
+        } else {
+          citaQuery = citaQuery.eq('id_cita', citaId);
         }
-      ]
-    );
+
+        const { error: citaError } = await citaQuery;
+
+        if (citaError) throw citaError;
+      }
+
+      if (user?.id_paciente) {
+        let relationQuery = supabase
+          .from('paciente_nutriologo')
+          .update({ activo: false })
+          .eq('id_paciente', user.id_paciente)
+          .eq('activo', true);
+
+        if (resolvedNutriologoId) {
+          relationQuery = relationQuery.eq('id_nutriologo', resolvedNutriologoId);
+        }
+
+        const { error: relationError } = await relationQuery;
+
+        if (relationError) throw relationError;
+
+        const { success: plansCleared, error: clearPlansError } = await patientPlanService.clearActivePlans(user.id_paciente);
+        if (!plansCleared) {
+          throw new Error(clearPlansError || 'No se pudieron limpiar dieta y rutina activas');
+        }
+      }
+
+      if (user?.id_paciente) {
+        const { error: clearError } = await supabase
+          .from('notificaciones')
+          .delete()
+          .eq('id_usuario', user.id_paciente)
+          .eq('tipo_usuario', 'paciente');
+
+        if (clearError) throw clearError;
+      }
+
+      setNotifications([]);
+      await refreshNutriologo();
+
+      showAppointmentFeedback(
+        'Cita denegada',
+        'El nutriólogo ya no verá tu información. Puedes agendar nuevamente cuando quieras.'
+      );
+    } catch (error) {
+      console.error('Error denegando cita:', error);
+      showAppointmentFeedback('Error', 'No se pudo denegar la cita. Intenta nuevamente.', true);
+    }
+  };
+
+  const handleDenyAppointment = (notification: any) => {
+    setAppointmentDecisionModal({
+      visible: true,
+      mode: 'denegar',
+      title: 'Denegar cita',
+      message: 'Si deniegas esta cita, el nutriólogo ya no podrá ver tu información y podrás agendar de nuevo con el mismo u otro nutriólogo. ¿Deseas continuar?',
+      confirmText: 'Denegar',
+      notification,
+    });
   };
 
   const openNotifications = async () => {
+    if (navigationLockRef.current) return;
+    navigationLockRef.current = true;
+
     setNotificationsVisible(true);
-    await loadNotifications();
+    try {
+      await loadNotifications();
+    } finally {
+      setTimeout(() => {
+        navigationLockRef.current = false;
+      }, 700);
+    }
+  };
+
+  const closeNotifications = () => {
+    setNotificationsVisible(false);
+    navigationLockRef.current = false;
   };
 
   const clearAllNotifications = async () => {
@@ -715,54 +871,68 @@ export default function DashboardScreen({ navigation }: any) {
   };
 
   // Manejar rechazo de cita
-  const handleRejectAppointment = async (notification: any) => {
-    Alert.alert(
-      'Rechazar cita',
-      '¿Estás seguro de que quieres rechazar esta cita?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Rechazar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const datos = notification.datos_adicionales || {};
-              
-              // Actualizar estado de la cita
-              const { error: citaError } = await supabase
-                .from('citas')
-                .update({ estado: 'cancelada' })
-                .eq('id_cita', datos.id_cita);
+  const executeRejectAppointment = async (notification: any) => {
+    try {
+      const datos = notification.datos_adicionales || {};
+      
+      // Actualizar estado de la cita
+      const { error: citaError } = await supabase
+        .from('citas')
+        .update({ estado: 'cancelada' })
+        .eq('id_cita', datos.id_cita);
 
-              if (citaError) throw citaError;
+      if (citaError) throw citaError;
 
-              // Crear notificación de rechazo
-              const { error: notifError } = await supabase
-                .from('notificaciones')
-                .insert({
-                  id_usuario: user?.id_paciente,
-                  tipo_usuario: 'paciente',
-                  titulo: 'Cita rechazada',
-                  mensaje: `Has rechazado la cita. Puedes agendar con otro nutriólogo`,
-                  tipo: 'cita',
-                  datos_adicionales: { id_cita: datos.id_cita, estado: 'rechazada' }
-                });
+      // Crear notificación de rechazo
+      const { error: notifError } = await supabase
+        .from('notificaciones')
+        .insert({
+          id_usuario: user?.id_paciente,
+          tipo_usuario: 'paciente',
+          titulo: 'Cita rechazada',
+          mensaje: `Has rechazado la cita. Puedes agendar con otro nutriólogo`,
+          tipo: 'cita',
+          datos_adicionales: { id_cita: datos.id_cita, estado: 'rechazada' }
+        });
 
-              if (notifError) throw notifError;
+      if (notifError) throw notifError;
 
-              // Marcar notificación original como leída
-              await markAsRead(notification.id_notificacion);
+      // Marcar notificación original como leída
+      await markAsRead(notification.id_notificacion);
 
-              Alert.alert('Cita rechazada', 'Puedes agendar una nueva cita con otro nutriólogo');
-              await loadNotifications(); // Recargar notificaciones
-            } catch (error) {
-              console.error('Error rechazando cita:', error);
-              Alert.alert('Error', 'No se pudo rechazar la cita');
-            }
-          }
-        }
-      ]
-    );
+      showAppointmentFeedback('Cita rechazada', 'Puedes agendar una nueva cita con otro nutriólogo');
+      await loadNotifications(); // Recargar notificaciones
+    } catch (error) {
+      console.error('Error rechazando cita:', error);
+      showAppointmentFeedback('Error', 'No se pudo rechazar la cita', true);
+    }
+  };
+
+  const handleRejectAppointment = (notification: any) => {
+    setAppointmentDecisionModal({
+      visible: true,
+      mode: 'rechazar',
+      title: 'Rechazar cita',
+      message: '¿Estás seguro de que quieres rechazar esta cita?',
+      confirmText: 'Rechazar',
+      notification,
+    });
+  };
+
+  const confirmAppointmentDecision = async () => {
+    const current = appointmentDecisionModal.notification;
+    if (!current || isProcessingAppointmentAction) return;
+
+    setIsProcessingAppointmentAction(true);
+
+    if (appointmentDecisionModal.mode === 'denegar') {
+      await executeDenyAppointment(current);
+    } else {
+      await executeRejectAppointment(current);
+    }
+
+    setIsProcessingAppointmentAction(false);
+    setAppointmentDecisionModal((prev) => ({ ...prev, visible: false, notification: null }));
   };
 
   // Lógica corregida de rango y manzana
@@ -820,6 +990,8 @@ export default function DashboardScreen({ navigation }: any) {
     return { uri: profileImage };
   };
 
+  const hasNutriologoAsignado = Boolean(nutriologo && estadoNutriologo !== 'sin_asignar');
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -831,7 +1003,7 @@ export default function DashboardScreen({ navigation }: any) {
         </TouchableOpacity>
         
         <View style={styles.brandContainer}>
-          <Image source={require('../../assets/logo.png')} style={styles.headerLogo} resizeMode="contain" />
+          <Image source={require('../../assets/logo.png')} style={styles.brandLogo} resizeMode="contain" />
         </View>
 
         <View style={styles.headerRight}>
@@ -868,6 +1040,31 @@ export default function DashboardScreen({ navigation }: any) {
         <View style={styles.welcomeContainer}>
           <Text style={styles.welcomeText}>Panel General</Text>
           <Text style={styles.subtitleText}>Estado actual de tu perfil</Text>
+        </View>
+
+        <View style={styles.nutriologoCard}>
+          <View style={styles.nutriologoHeader}>
+            <Ionicons name="medical-outline" size={20} color={COLORS.primary} />
+            <Text style={styles.nutriologoTitle}>Tu nutriólogo</Text>
+          </View>
+
+          {loadingNutriologo ? (
+            <View style={styles.nutriologoLoadingRow}>
+              <Ionicons name="time-outline" size={16} color={COLORS.textLight} />
+              <Text style={styles.nutriologoHint}>Verificando asignación...</Text>
+            </View>
+          ) : hasNutriologoAsignado ? (
+            <>
+              <Text style={styles.nutriologoName}>
+                Dr. {nutriologo?.nombre} {nutriologo?.apellido}
+              </Text>
+              {!!nutriologo?.especialidad && (
+                <Text style={styles.nutriologoHint}>{nutriologo.especialidad}</Text>
+              )}
+            </>
+          ) : (
+            <Text style={styles.nutriologoHint}>No tienes nutriólogo asignado actualmente.</Text>
+          )}
         </View>
 
         <TouchableOpacity 
@@ -921,15 +1118,81 @@ export default function DashboardScreen({ navigation }: any) {
 
       <NotificationModal
         visible={notificationsVisible}
-        onClose={() => setNotificationsVisible(false)}
+        onClose={closeNotifications}
         notifications={notifications}
-        onMarkAsRead={markAsRead}
+        onMarkAsRead={handleNotificationPress}
+        onViewNotification={handleNotificationPress}
         onClearAll={clearAllNotifications}
         onAcceptAppointment={handleAcceptAppointment}
         onRejectAppointment={handleRejectAppointment}
         onGoToPayment={handleGoToPayment}
         onDenyAppointment={handleDenyAppointment}
       />
+
+      <Modal
+        visible={appointmentDecisionModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAppointmentDecisionModal}
+      >
+        <View style={styles.decisionModalOverlay}>
+          <View style={styles.decisionModalCard}>
+            <View style={styles.decisionIconWrap}>
+              <Ionicons name="warning-outline" size={28} color={COLORS.reject} />
+            </View>
+
+            <Text style={styles.decisionModalTitle}>{appointmentDecisionModal.title}</Text>
+            <Text style={styles.decisionModalMessage}>{appointmentDecisionModal.message}</Text>
+
+            <View style={styles.decisionButtonsRow}>
+              <TouchableOpacity
+                style={styles.decisionCancelButton}
+                onPress={closeAppointmentDecisionModal}
+                disabled={isProcessingAppointmentAction}
+              >
+                <Text style={styles.decisionCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.decisionConfirmButton}
+                onPress={confirmAppointmentDecision}
+                disabled={isProcessingAppointmentAction}
+              >
+                {isProcessingAppointmentAction ? (
+                  <Text style={styles.decisionConfirmText}>Procesando...</Text>
+                ) : (
+                  <Text style={styles.decisionConfirmText}>{appointmentDecisionModal.confirmText}</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={appointmentFeedbackModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAppointmentFeedbackModal}
+      >
+        <View style={styles.decisionModalOverlay}>
+          <View style={styles.decisionModalCard}>
+            <View style={styles.decisionIconWrap}>
+              <Ionicons name={appointmentFeedbackModal.icon} size={30} color={appointmentFeedbackModal.color} />
+            </View>
+
+            <Text style={styles.decisionModalTitle}>{appointmentFeedbackModal.title}</Text>
+            <Text style={styles.decisionModalMessage}>{appointmentFeedbackModal.message}</Text>
+
+            <TouchableOpacity
+              style={styles.decisionOkButton}
+              onPress={closeAppointmentFeedbackModal}
+            >
+              <Text style={styles.decisionOkText}>Entendido</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -960,16 +1223,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
-  headerIcon: { padding: 5, zIndex: 1 },
+  headerIcon: { padding: 5 },
   brandContainer: {
     position: 'absolute',
     left: 0,
     right: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    pointerEvents: 'none',
   },
-  headerLogo: { width: 130, height: 42 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', zIndex: 1 },
+  brandLogo: { width: 130, height: 38 },
+  brandName: { fontSize: 20, fontWeight: '900', color: COLORS.primary, letterSpacing: 1.5 },
+  underlineSmall: { width: 25, height: 3, backgroundColor: COLORS.accent, borderRadius: 2, marginTop: 2 },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
   notificationBell: { marginRight: 15, position: 'relative', padding: 5 },
   notificationBadge: {
     position: 'absolute',
@@ -998,6 +1264,40 @@ const styles = StyleSheet.create({
   welcomeContainer: { marginBottom: 25 },
   welcomeText: { fontSize: 24, fontWeight: '800', color: COLORS.textDark },
   subtitleText: { fontSize: 14, color: COLORS.textLight, fontWeight: '300' },
+  nutriologoCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 16,
+  },
+  nutriologoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  nutriologoTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: COLORS.textDark,
+  },
+  nutriologoName: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.primary,
+  },
+  nutriologoHint: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  nutriologoLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   pointsCard: {
     backgroundColor: COLORS.white,
     borderRadius: 20,
@@ -1191,5 +1491,96 @@ const styles = StyleSheet.create({
     color: COLORS.textDark,
     fontSize: 12,
     fontWeight: '600',
+  },
+  decisionModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  decisionModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    alignItems: 'center',
+    elevation: 6,
+  },
+  decisionIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: COLORS.secondary,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  decisionModalTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: COLORS.textDark,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  decisionModalMessage: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 18,
+  },
+  decisionButtonsRow: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  decisionCancelButton: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.secondary,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  decisionCancelText: {
+    color: COLORS.textDark,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  decisionConfirmButton: {
+    flex: 1,
+    borderRadius: 12,
+    backgroundColor: COLORS.reject,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  decisionConfirmText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  decisionOkButton: {
+    width: '100%',
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  decisionOkText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '900',
   },
 });

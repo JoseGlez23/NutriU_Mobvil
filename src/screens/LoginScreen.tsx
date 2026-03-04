@@ -476,6 +476,9 @@ export default function LoginScreen({ navigation }: any) {
                 minimumDate={new Date(1899, 0, 1)}
                 maximumDate={new Date()}
                 locale="es-MX"
+                textColor={COLORS.textDark}
+                themeVariant="light"
+                style={styles.iosDatePicker}
               />
 
               <View style={styles.dateModalActions}>
@@ -612,6 +615,9 @@ const styles = StyleSheet.create({
     color: COLORS.textDark,
     textAlign: 'center',
     marginBottom: 6,
+  },
+  iosDatePicker: {
+    alignSelf: 'stretch',
   },
   dateModalActions: {
     flexDirection: 'row',
