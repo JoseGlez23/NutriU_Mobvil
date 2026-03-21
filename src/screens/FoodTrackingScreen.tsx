@@ -1,4 +1,21 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+// Utilidad para calcular calorías consumidas según unidad y cantidad
+function calcularCaloriasConsumidas({ cantidad, unidad, alimento }: { cantidad: number, unidad: string, alimento: any }) {
+  if (!alimento) return 0;
+  const caloriasPor100g = Number(alimento.calorias_por_100g) || 0;
+  const gramosPorUnidad = Number(alimento.gramos_por_unidad_base) || 0;
+  let gramosConsumidos = 0;
+  const unidadNorm = (unidad || '').toLowerCase();
+  if (unidadNorm === 'g' || unidadNorm === 'gramos' || unidadNorm === 'gramo') {
+    gramosConsumidos = cantidad;
+  } else if (unidadNorm && gramosPorUnidad > 0) {
+    gramosConsumidos = cantidad * gramosPorUnidad;
+  } else {
+    // fallback: tratar como porción de 100g
+    gramosConsumidos = cantidad * 100;
+  }
+  return (gramosConsumidos * caloriasPor100g) / 100;
+}
 import {
   View,
   Text,
@@ -27,6 +44,7 @@ import NetInfo from '@react-native-community/netinfo';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import { syncMealPlanNotifications } from '../services/notificationService';
 
 const COLORS = {
   primary: '#2E8B57',
@@ -53,6 +71,7 @@ const DAYS = ['LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', '
 const MEALS = ['Desayuno', 'Colación 1', 'Almuerzo', 'Colación 2', 'Cena'];
 const CALORIE_GOAL = 2000;
 const POINTS_GOAL = 20;
+const formatPoints = (value: number) => Number(value || 0).toLocaleString('en-US');
 
 const normalizeMealType = (value: string) =>
   String(value || '')
@@ -143,6 +162,11 @@ const formatDisplayDate = (value: string) => {
 
 const getLastDayOfMonth = (year: number, monthIndex: number) => {
   return new Date(year, monthIndex + 1, 0).getDate();
+};
+const logFoodTrackingWarning = (message: string, error?: any) => {
+  if (__DEV__) {
+    console.warn(message, error);
+  }
 };
 
 export default function FoodTrackingScreen({ navigation }: any) {
@@ -240,7 +264,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
       if (error) throw error;
       setTotalPoints(data?.puntos_totales || 0);
     } catch (err) {
-      console.error('Error cargando puntos:', err);
+      logFoodTrackingWarning('Error cargando puntos', err);
     }
   };
 
@@ -295,23 +319,28 @@ export default function FoodTrackingScreen({ navigation }: any) {
         const rawPoints = item.puntos_obtenidos ?? item.alimentos?.puntos ?? item.alimentos?.puntos_obtenidos;
         const numericPoints = Number(rawPoints);
         const resolvedPoints = Number.isFinite(numericPoints) && numericPoints > 0 ? numericPoints : 3;
-
+        // Calcular calorías reales
+        const kcalCalculada = calcularCaloriasConsumidas({
+          cantidad: item.cantidad,
+          unidad: item.unidad || (item.alimentos?.unidad_base || 'g'),
+          alimento: item.alimentos || {},
+        });
         return {
-        id: item.id_registro,
-        food: {
-          id: item.id_alimento || `custom-${item.id_registro}`,
-          name: item.alimento_personalizado || (item.alimentos?.nombre || 'Personalizado'),
-          unit: item.unidad || 'g',
-          kcalPerUnit: item.alimentos?.calorias_por_100g ? item.alimentos.calorias_por_100g / 100 : 0,
-          pts: resolvedPoints,
-        },
-        grams: item.cantidad,
-        kcal: item.calorias_totales,
-        points: resolvedPoints,
-        assignedDate: item.fecha || today,
-        assignedTime: item.hora || null,
-        confirmedAt: item.created_at || null,
-        mealType: item.tipo_comida?.trim(), // Guardamos tal cual viene (con acentos y mayúsculas)
+          id: item.id_registro,
+          food: {
+            id: item.id_alimento || `custom-${item.id_registro}`,
+            name: item.alimento_personalizado || (item.alimentos?.nombre || 'Personalizado'),
+            unit: item.unidad || 'g',
+            kcalPerUnit: item.alimentos?.calorias_por_100g ? item.alimentos.calorias_por_100g / 100 : 0,
+            pts: resolvedPoints,
+          },
+          grams: item.cantidad,
+          kcal: kcalCalculada,
+          points: resolvedPoints,
+          assignedDate: item.fecha || today,
+          assignedTime: item.hora || null,
+          confirmedAt: item.created_at || null,
+          mealType: item.tipo_comida?.trim(),
         };
       });
       setTodayHistory(mapped);
@@ -325,6 +354,49 @@ export default function FoodTrackingScreen({ navigation }: any) {
 
       // Cargar dieta recomendada para el día seleccionado
       if (estadoNutriologo === 'asignado_con_dieta') {
+        const { data: activeDiet, error: activeDietError } = await supabase
+          .from('dietas')
+          .select('id_dieta')
+          .eq('id_paciente', user.id_paciente)
+          .eq('activa', true)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (activeDietError) {
+          console.warn('[FoodTracking] No se pudo obtener la dieta activa:', activeDietError.message);
+        }
+
+        const activeDietId = activeDiet?.id_dieta ?? null;
+        if (!activeDietId) {
+          setDietaRecomendada([]);
+          return;
+        }
+
+        const { data: remindersData, error: remindersError } = await supabase
+          .from('dieta_detalle')
+          .select(`
+            dia_semana,
+            tipo_comida,
+            descripcion,
+            horario
+          `)
+          .eq('id_dieta', activeDietId)
+          .not('horario', 'is', null);
+
+        if (!remindersError && remindersData) {
+          const mappedReminders = remindersData.map((item: any) => ({
+            diaSemana: Number(item.dia_semana || 0),
+            tipoComida: String(item.tipo_comida || 'Comida'),
+            descripcion: item.descripcion || null,
+            horario: item.horario || null,
+          }));
+
+          // Solo sincronizar recordatorios programados. La sincronización de recordatorios 
+          // vencidos se ejecuta una sola vez en AuthContext durante el login para evitar "avalanchas"
+          await syncMealPlanNotifications(user.id_paciente, mappedReminders);
+        }
+
         const diaMap: Record<(typeof DAYS)[number], number> = {
           LUNES: 1,
           MARTES: 2,
@@ -338,11 +410,8 @@ export default function FoodTrackingScreen({ navigation }: any) {
 
         const { data: dietaData, error: dietaError } = await supabase
           .from('dieta_detalle')
-          .select(`
-            *,
-            dietas!inner(id_paciente)
-          `)
-          .eq('dietas.id_paciente', user.id_paciente)
+          .select('*')
+          .eq('id_dieta', activeDietId)
           .eq('dia_semana', diaNumero)
           .in('tipo_comida', MEALS)
           .order('orden', { ascending: true });
@@ -402,8 +471,14 @@ export default function FoodTrackingScreen({ navigation }: any) {
         setDietaRecomendada([]);
       }
     } catch (err) {
-      console.error('Error cargando datos:', err);
-      Alert.alert('Error', 'No se pudieron cargar los datos. Intenta refrescar.');
+      logFoodTrackingWarning('Error cargando datos', err);
+      const netState = await NetInfo.fetch();
+      const isOnline = Boolean(netState.isConnected && netState.isInternetReachable !== false);
+      if (!isOnline) {
+        Alert.alert('Sin conexión', 'No hay conexión a internet. Conéctate e intenta de nuevo.');
+      } else {
+        Alert.alert('Error', 'No se pudieron cargar los datos. Intenta refrescar.');
+      }
     } finally {
       setLoading(false);
     }
@@ -468,7 +543,12 @@ export default function FoodTrackingScreen({ navigation }: any) {
         const rawPoints = item.puntos_obtenidos ?? item.alimentos?.puntos ?? item.alimentos?.puntos_obtenidos;
         const numericPoints = Number(rawPoints);
         const resolvedPoints = Number.isFinite(numericPoints) && numericPoints > 0 ? numericPoints : 3;
-
+        // Calcular calorías reales
+        const kcalCalculada = calcularCaloriasConsumidas({
+          cantidad: item.cantidad,
+          unidad: item.unidad || (item.alimentos?.unidad_base || 'g'),
+          alimento: item.alimentos || {},
+        });
         return {
           id: item.id_registro,
           food: {
@@ -479,7 +559,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
             pts: resolvedPoints,
           },
           grams: item.cantidad,
-          kcal: item.calorias_totales,
+          kcal: kcalCalculada,
           points: resolvedPoints,
           assignedDate: item.fecha || start,
           assignedTime: item.hora || null,
@@ -490,7 +570,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
 
       setHistoryRecords(mapped);
     } catch (err) {
-      console.error('Error cargando historial filtrado:', err);
+      logFoodTrackingWarning('Error cargando historial filtrado', err);
       Alert.alert('Error', 'No se pudo cargar el historial con el filtro seleccionado.');
       setHistoryRecords([]);
     } finally {
@@ -536,7 +616,10 @@ export default function FoodTrackingScreen({ navigation }: any) {
             <meta charset="utf-8" />
             <style>
               body { font-family: Arial, sans-serif; padding: 24px; color: #1A3026; }
-              h1 { color: #2E8B57; margin-bottom: 4px; }
+              .logo-container { text-align: center; margin-bottom: 8px; }
+              .logo-img { width: 80px; height: auto; margin-bottom: 4px; }
+              .nutriu-title { color: #2E8B57; font-size: 22px; font-weight: bold; margin-bottom: 2px; }
+              .nutriu-subtitle { color: #4A4A4A; font-size: 16px; margin-bottom: 16px; }
               .subtitle { color: #4A4A4A; margin-bottom: 16px; }
               .totals { margin-bottom: 18px; font-size: 14px; }
               table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -546,7 +629,16 @@ export default function FoodTrackingScreen({ navigation }: any) {
             </style>
           </head>
           <body>
-            <h1>NutriU - Historial Nutricional</h1>
+            <div class="logo-container">
+              <img src="https://hthnkzwjotwqhvjgqhfv.supabase.co/storage/v1/object/public/perfiles/Logotipo/logo.png" style="width: 140px; height: auto; margin-bottom: 4px;" alt="NutriU logo" />
+              <div style="margin-bottom: 10px; font-size: 15px; color: #1A3026;">
+                <strong>Paciente:</strong> ${user?.nombre || ''} ${user?.apellido || ''}<br/>
+                <strong>Edad:</strong> ${user?.fecha_nacimiento ? Math.max(0, new Date().getFullYear() - new Date(user.fecha_nacimiento).getFullYear()) : '--'} años<br/>
+                <strong>Peso:</strong> ${user?.peso || '--'} kg &nbsp; <strong>Altura:</strong> ${user?.altura || '--'} cm<br/>
+                <strong>IMC:</strong> ${user?.imc ? user.imc.toFixed(2) : '--'}
+              </div>
+              <div class="nutriu-subtitle">Historial Nutricional</div>
+            </div>
             <div class="subtitle">Filtro aplicado: ${label}</div>
             <div class="totals">
               <strong>Registros:</strong> ${historyRecords.length} &nbsp; | &nbsp;
@@ -585,7 +677,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
         Alert.alert('PDF generado', `Se generó el PDF en: ${uri}`);
       }
     } catch (err) {
-      console.error('Error exportando PDF:', err);
+      logFoodTrackingWarning('Error exportando PDF', err);
       Alert.alert('Error', 'No se pudo exportar el historial en PDF.');
     } finally {
       setExportingPdf(false);
@@ -667,7 +759,13 @@ export default function FoodTrackingScreen({ navigation }: any) {
     setIsRegistering(true);
 
     try {
-      const kcalTotal = qty * (selectedFood.kcalPerUnit || 0);
+      // Buscar alimento completo para cálculo
+      const alimento = foods.find(f => f.id_alimento === selectedFood.id_alimento) || {};
+      const kcalTotal = calcularCaloriasConsumidas({
+        cantidad: qty,
+        unidad: selectedFood.unit || alimento.unidad_base || 'g',
+        alimento,
+      });
       const maxQty = Number(selectedFood.max || 1);
       const pointsEarned = Math.round((qty / maxQty) * (selectedFood.pts || 3));
       const pointsFinal = Math.max(1, Math.min(pointsEarned, selectedFood.pts || 3));
@@ -709,7 +807,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
       }
 
       if (error) {
-        console.error('Error Supabase:', error);
+        logFoodTrackingWarning('Error Supabase al registrar alimento', error);
         if (error.code === '23514') {
           Alert.alert('Error de validación', 'El tipo de comida no coincide con los permitidos. Contacta soporte o verifica la dieta.');
         } else if (error.code === '23505') {
@@ -729,7 +827,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
         setAmount('');
       }
     } catch (error) {
-      console.error('Error al registrar:', error);
+      logFoodTrackingWarning('Error al registrar alimento', error);
       Alert.alert('Error', 'Ocurrió un error al registrar el alimento.');
     } finally {
       setIsRegistering(false);
@@ -1077,7 +1175,7 @@ export default function FoodTrackingScreen({ navigation }: any) {
           <View style={styles.underlineSmall} />
         </View>
         <View style={styles.pointsPill}>
-          <Text style={styles.pointsVal}>{totalPoints} PTS</Text>
+          <Text style={styles.pointsVal}>{formatPoints(totalPoints)} PTS</Text>
         </View>
       </View>
 
@@ -1348,14 +1446,14 @@ export default function FoodTrackingScreen({ navigation }: any) {
               <View style={styles.progressHeader}>
                 <Text style={styles.progressLabel}>PUNTOS</Text>
                 <Text style={styles.progressValue}>
-                  {stats.totalPoints} / {POINTS_GOAL} pts
+                  {formatPoints(stats.totalPoints)} / {formatPoints(POINTS_GOAL)} pts
                 </Text>
               </View>
 
               <View style={styles.pointsCardsGrid}>
                 <View style={styles.pointsCardSmall}>
                   <Text style={styles.pointsCardLabel}>Ganados</Text>
-                  <Text style={styles.pointsCardValue}>{stats.totalPoints}</Text>
+                  <Text style={styles.pointsCardValue}>{formatPoints(stats.totalPoints)}</Text>
                 </View>
 
                 <View style={styles.pointsCardSmall}>

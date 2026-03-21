@@ -42,7 +42,7 @@ export const ProfileImageProvider: React.FC<ProfileImageProviderProps> = ({ chil
 
       if (data?.publicUrl) {
         const url = `${data.publicUrl}?t=${Date.now()}`;
-        console.log('Foto cargada:', url);
+        // Log eliminado para producción
         return url;
       }
 

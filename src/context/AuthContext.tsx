@@ -1,9 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Session, User } from '@supabase/supabase-js';
-import * as Linking from 'expo-linking';
-import Constants from 'expo-constants';
 import { supabase } from '../lib/supabase';
-import { registerForPushNotifications, unregisterPushToken } from '../services/notificationService';
+import { registerForPushNotifications, syncMealPlanNotifications, syncMissedMealRemindersToInbox, unregisterPushToken } from '../services/notificationService';
 
 interface AuthContextType {
   session: Session | null;
@@ -25,6 +23,9 @@ interface AuthContextType {
   }) => Promise<{ success: boolean; error?: string; message?: string }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
+  verifyPasswordResetOtp: (email: string, token: string) => Promise<{ success: boolean; error?: string }>;
+  completePasswordReset: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  abortPasswordResetFlow: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -42,10 +43,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [pushToken, setPushToken] = useState<string | null>(null);
+  const isPasswordRecoveryFlowRef = useRef(false);
+  const lastPushSetupRef = useRef<{ authUserId: string | null; at: number }>({
+    authUserId: null,
+    at: 0,
+  });
+
+  const syncPatientEmailWithAuth = async (authUser: User) => {
+    const normalizedEmail = authUser.email?.trim().toLowerCase();
+    if (!normalizedEmail) return;
+
+    try {
+      const { data: paciente, error: pacienteError } = await supabase
+        .from('pacientes')
+        .select('id_paciente, correo')
+        .eq('id_auth_user', authUser.id)
+        .maybeSingle();
+
+      if (pacienteError || !paciente?.id_paciente) return;
+
+      const currentEmail = String(paciente.correo || '').trim().toLowerCase();
+      if (currentEmail === normalizedEmail) return;
+
+      await supabase
+        .from('pacientes')
+        .update({ correo: normalizedEmail })
+        .eq('id_paciente', paciente.id_paciente);
+    } catch (error) {
+      console.warn('[AUTH] No se pudo sincronizar correo en pacientes:', error);
+    }
+  };
 
   useEffect(() => {
     // Verificar sesión existente
     supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (isPasswordRecoveryFlowRef.current && session) {
+        setSession(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
       setSession(session);
       setUser(session?.user ?? null);
 
@@ -53,18 +91,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // No bloquear el arranque por registro de notificaciones push.
       if (session?.user) {
+        void syncPatientEmailWithAuth(session.user);
         void registerPushNotificationsForUser(session.user);
       }
     });
 
     // Escuchar cambios en la autenticación
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      // Durante recuperación por OTP no debemos "loggear" visualmente al usuario,
+      // aunque Supabase cree una sesión temporal para permitir updateUser(password).
+      if (isPasswordRecoveryFlowRef.current && session) {
+        setSession(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
       setSession(session);
       setUser(session?.user ?? null);
 
       setLoading(false);
 
       if (session?.user) {
+        void syncPatientEmailWithAuth(session.user);
         void registerPushNotificationsForUser(session.user);
       }
     });
@@ -74,6 +123,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Función auxiliar para registrar notificaciones push
   const registerPushNotificationsForUser = async (authUser: User) => {
+    const now = Date.now();
+    if (
+      lastPushSetupRef.current.authUserId === authUser.id &&
+      now - lastPushSetupRef.current.at < 15000
+    ) {
+      return;
+    }
+    lastPushSetupRef.current = { authUserId: authUser.id, at: now };
+
     try {
       // Priorizar id_auth_user para evitar fallas si el correo difiere por mayusculas/edicion.
       const { data: pacienteByAuth } = await supabase
@@ -104,6 +162,62 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPushToken(token);
         console.log('[AUTH] Notificaciones push registradas exitosamente');
       }
+
+      const { data: activeDiet, error: activeDietError } = await supabase
+        .from('dietas')
+        .select('id_dieta')
+        .eq('id_paciente', pacienteId)
+        .eq('activa', true)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeDietError) {
+        console.warn('[AUTH] No se pudo obtener la dieta activa:', activeDietError.message);
+      }
+
+      const activeDietId = activeDiet?.id_dieta ?? null;
+      if (!activeDietId) {
+        console.log('[AUTH] No hay dieta activa para sincronizar recordatorios');
+        return;
+      }
+
+      const { data: remindersData, error: remindersError } = await supabase
+        .from('dieta_detalle')
+        .select(`
+          dia_semana,
+          tipo_comida,
+          descripcion,
+          horario
+        `)
+        .eq('id_dieta', activeDietId)
+        .not('horario', 'is', null);
+
+      if (!remindersError && remindersData) {
+        console.log('[AUTH] Sincronizando recordatorios de comida:', remindersData.length);
+        
+        await syncMealPlanNotifications(
+          pacienteId,
+          remindersData.map((item: any) => ({
+            diaSemana: Number(item.dia_semana || 0),
+            tipoComida: String(item.tipo_comida || 'Comida'),
+            descripcion: item.descripcion || null,
+            horario: item.horario || null,
+          }))
+        );
+
+        const missedResult = await syncMissedMealRemindersToInbox(
+          pacienteId,
+          remindersData.map((item: any) => ({
+            diaSemana: Number(item.dia_semana || 0),
+            tipoComida: String(item.tipo_comida || 'Comida'),
+            descripcion: item.descripcion || null,
+            horario: item.horario || null,
+          }))
+        );
+        
+        console.log('[AUTH] Resultado de sincronización de recordatorios vencidos:', missedResult);
+      }
     } catch (error) {
       console.error('[AUTH] Error registrando notificaciones push:', error);
     }
@@ -111,6 +225,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signIn = async (email: string, password: string) => {
     try {
+      // Si el usuario decide volver a iniciar sesión manualmente,
+      // cerramos cualquier estado previo de recuperación.
+      isPasswordRecoveryFlowRef.current = false;
+
       if (!email.trim() || !password.trim()) {
         return { 
           success: false, 
@@ -363,12 +481,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = async () => {
     try {
       // Desregistrar token de notificaciones si existe
-      if (pushToken && user?.email) {
-        const { data: pacienteData } = await supabase
+      if (pushToken && user?.id) {
+        const { data: pacienteByAuth } = await supabase
           .from('pacientes')
           .select('id_paciente')
-          .eq('correo', user.email.toLowerCase())
+          .eq('id_auth_user', user.id)
           .maybeSingle();
+
+        let pacienteData = pacienteByAuth;
+
+        if (!pacienteData?.id_paciente && user.email) {
+          const { data: pacienteByEmail } = await supabase
+            .from('pacientes')
+            .select('id_paciente')
+            .eq('correo', user.email.toLowerCase())
+            .maybeSingle();
+          pacienteData = pacienteByEmail;
+        }
 
         if (pacienteData?.id_paciente) {
           await unregisterPushToken(pacienteData.id_paciente, pushToken);
@@ -406,18 +535,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      const isExpoGo = Constants.appOwnership === 'expo';
-      const redirectTo = isExpoGo
-        ? Linking.createURL('reset-password')
-        : 'nutriu://reset-password';
-
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo,
+      // Flujo OTP numérico: Supabase envía un código al correo.
+      const { error } = await supabase.auth.signInWithOtp({
+        email: email.trim().toLowerCase(),
+        options: {
+          shouldCreateUser: false,
+        },
       });
 
       if (error) {
         // Manejo específico del rate limit (sin mostrar error técnico al usuario)
-        if (error.message.includes('rate limit') || error.message.includes('exceeded')) {
+        const normalizedError = String(error.message || '').toLowerCase();
+        if (
+          normalizedError.includes('rate limit') ||
+          normalizedError.includes('exceeded') ||
+          normalizedError.includes('too many requests') ||
+          normalizedError.includes('security purposes')
+        ) {
           return {
             success: false,
             error: 'Has excedido el límite temporal de solicitudes de recuperación. ' +
@@ -427,7 +561,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         return { 
           success: false, 
-          error: 'Error al enviar enlace de recuperación.' 
+          error: 'No se pudo enviar el código de verificación. Intenta nuevamente.' 
         };
       }
       
@@ -437,6 +571,115 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         success: false, 
         error: 'Error inesperado. Por favor intenta nuevamente.' 
       };
+    }
+  };
+
+  const verifyPasswordResetOtp = async (email: string, token: string) => {
+    try {
+      isPasswordRecoveryFlowRef.current = true;
+
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      const normalizedToken = String(token || '').trim();
+
+      if (!normalizedEmail || !normalizedToken) {
+        return {
+          success: false,
+          error: 'Completa correo y código para continuar.',
+        };
+      }
+
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        email: normalizedEmail,
+        token: normalizedToken,
+        type: 'email',
+      });
+
+      if (verifyError) {
+        const verifyMessage = String(verifyError.message || '').toLowerCase();
+        if (
+          verifyMessage.includes('expired') ||
+          verifyMessage.includes('invalid') ||
+          verifyMessage.includes('token')
+        ) {
+          return {
+            success: false,
+            error: 'El código es inválido o ya expiró. Solicita uno nuevo.',
+          };
+        }
+
+        return {
+          success: false,
+          error: 'No se pudo validar el código de verificación.',
+        };
+      }
+
+      // Refuerzo: mantener la UI en estado no autenticado durante el flujo de recuperación,
+      // aunque Supabase cree internamente una sesión temporal para updateUser(password).
+      setSession(null);
+      setUser(null);
+      setLoading(false);
+
+      return { success: true };
+    } catch (_error) {
+      isPasswordRecoveryFlowRef.current = false;
+      return {
+        success: false,
+        error: 'Error inesperado al confirmar el código.',
+      };
+    }
+  };
+
+  const completePasswordReset = async (newPassword: string) => {
+    try {
+      if (!newPassword || newPassword.trim().length < 6) {
+        return {
+          success: false,
+          error: 'La nueva contraseña debe tener al menos 6 caracteres.',
+        };
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateError) {
+        const updateMessage = String(updateError.message || '').toLowerCase();
+        if (updateMessage.includes('different from the old password')) {
+          return {
+            success: false,
+            error: 'La nueva contraseña debe ser diferente a la anterior.',
+          };
+        }
+
+        return {
+          success: false,
+          error: 'No se pudo actualizar la contraseña. Intenta nuevamente.',
+        };
+      }
+
+      // Dejar al usuario en estado limpio para relogin con nuevas credenciales.
+      await supabase.auth.signOut();
+      isPasswordRecoveryFlowRef.current = false;
+
+      return { success: true };
+    } catch (_error) {
+      return {
+        success: false,
+        error: 'Error inesperado al actualizar la contraseña.',
+      };
+    }
+  };
+
+  const abortPasswordResetFlow = async () => {
+    try {
+      isPasswordRecoveryFlowRef.current = false;
+      await supabase.auth.signOut();
+    } catch {
+      // No bloquear UX por errores de limpieza.
+    } finally {
+      setSession(null);
+      setUser(null);
+      setLoading(false);
     }
   };
 
@@ -450,6 +693,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signUp,
         signOut,
         resetPassword,
+        verifyPasswordResetOtp,
+        completePasswordReset,
+        abortPasswordResetFlow,
       }}
     >
       {children}

@@ -15,6 +15,7 @@ import {
   FlatList,
   Alert
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import HamburgerMenu from '../components/HamburgerMenu';
 import { useUser } from '../hooks/useUser';
@@ -45,6 +46,7 @@ const COLORS = {
 };
 
 const TIMEZONE = 'America/Hermosillo'; // SaYA SE SUBIO WE PORFIN ALV
+const formatPoints = (value: number) => Number(value || 0).toLocaleString('en-US');
 
 // Componentes de animación (sin cambios)
 const FloatingIcons = () => {
@@ -111,7 +113,11 @@ const NotificationModal = ({ visible, onClose, notifications, onMarkAsRead, onCl
 
   const isDietNotification = (item: any) => {
     const subtipo = item?.datos_adicionales?.subtipo;
+    const tipo = item?.tipo;
+    const datosTipo = item?.datos_adicionales?.tipo;
+    // Reconoce subtipo dieta_asignada, tipo sistema con datos_adicionales.tipo diet_updated
     if (subtipo === 'dieta_asignada') return true;
+    if (tipo === 'sistema' && datosTipo === 'diet_updated') return true;
 
     const title = String(item?.titulo || '').toLowerCase();
     const message = String(item?.mensaje || '').toLowerCase();
@@ -411,7 +417,7 @@ export default function DashboardScreen({ navigation }: any) {
           setLocalTodayPoints(parsed.puntos_hoy || 0);
         }
       } catch (e) {
-        console.warn("Error leyendo caché dashboard:", e);
+
       }
     };
     loadCachedData();
@@ -431,9 +437,17 @@ export default function DashboardScreen({ navigation }: any) {
         puntos_totales: newPoints,
         puntos_hoy: newToday,
         timestamp: Date.now(),
-      })).catch(e => console.warn("Error guardando caché:", e));
+      }));
     }
   }, [user]);
+
+  // ✅ Refresco de datos cuando se re-enfoca la pantalla (después de registrar puntos en FoodTrackingScreen)
+  useFocusEffect(
+    useCallback(() => {
+      refreshUserData(true);
+      loadNotifications();
+    }, [refreshUserData, loadNotifications])
+  );
 
   const appendPendingPaymentNotifications = useCallback(async (baseNotifications: any[]) => {
     return sortNotificationsByDate(baseNotifications);
@@ -665,28 +679,63 @@ export default function DashboardScreen({ navigation }: any) {
         )
       );
     } catch (error) {
-      console.error('Error marcando notificación como leída:', error);
     }
   };
 
   const handleNotificationPress = async (notification: any) => {
-    const subtipo = notification?.datos_adicionales?.subtipo;
+    const tipo = String(notification?.tipo || '').toLowerCase();
+    const subtipo = String(notification?.datos_adicionales?.subtipo || '').toLowerCase();
+    const destino = String(notification?.datos_adicionales?.destino || '').toLowerCase();
     const title = String(notification?.titulo || '').toLowerCase();
     const message = String(notification?.mensaje || '').toLowerCase();
     const isPointsByText = title.includes('puntos') || message.includes('puntos');
     const isDietByText = title.includes('dieta') || message.includes('plan nutricional') || message.includes('dieta');
+    const isAppointmentByText = title.includes('cita') || message.includes('cita');
+    const isPaymentByText = title.includes('pago') || message.includes('pago');
 
-    if (subtipo === 'dieta_asignada' || isDietByText) {
+    const shouldGoFood =
+      subtipo === 'dieta_asignada' ||
+      subtipo === 'diet_created' ||
+      subtipo === 'diet_updated' ||
+      destino === 'foodtracking' ||
+      isDietByText;
+
+    const shouldGoPoints =
+      subtipo === 'puntos_asignados' ||
+      subtipo === 'points_awarded' ||
+      destino === 'points' ||
+      isPointsByText;
+
+    const shouldGoSchedule =
+      tipo === 'cita' ||
+      tipo === 'cita_pendiente_pago' ||
+      tipo === 'pago' ||
+      subtipo === 'appointment_request' ||
+      destino === 'schedule' ||
+      isAppointmentByText ||
+      isPaymentByText;
+
+    if (shouldGoFood) {
       await markAsRead(notification.id_notificacion);
       setNotificationsVisible(false);
       safeNavigate('FoodTracking');
       return;
     }
 
-    if (subtipo === 'puntos_asignados' || isPointsByText) {
+    if (shouldGoPoints) {
       await markAsRead(notification.id_notificacion);
       setNotificationsVisible(false);
       safeNavigate('Points');
+      return;
+    }
+
+    if (shouldGoSchedule) {
+      await markAsRead(notification.id_notificacion);
+      setNotificationsVisible(false);
+      safeNavigate('Schedule', {
+        initialTab: 'pendientes',
+        fromNotificationTap: true,
+      });
       return;
     }
 
@@ -694,40 +743,8 @@ export default function DashboardScreen({ navigation }: any) {
   };
 
   const handleGoToPayment = async (notification: any) => {
-    const datos = notification?.datos_adicionales || {};
-    const citaId = Number(datos.id_cita);
-    const doctorId = Number(datos.id_nutriologo);
-    let doctorName = datos.doctor_nombre || 'Nutriólogo';
-    let precio = Number(datos.precio || 0);
-
-    if (doctorId && (!precio || precio <= 0 || !datos.doctor_nombre)) {
-      const { data: nutriologoData, error: nutriologoError } = await supabase
-        .from('nutriologos')
-        .select('nombre, apellido, tarifa_consulta')
-        .eq('id_nutriologo', doctorId)
-        .maybeSingle();
-
-      if (!nutriologoError && nutriologoData) {
-        const resolvedName = `${nutriologoData.nombre || ''} ${nutriologoData.apellido || ''}`.trim();
-        doctorName = resolvedName || doctorName;
-        precio = Number(nutriologoData.tarifa_consulta || precio || 0);
-      }
-    }
-
     await markAsRead(notification.id_notificacion);
     setNotificationsVisible(false);
-
-    if (citaId && doctorId) {
-      safeNavigate('Schedule', {
-        initialTab: 'pendientes',
-        citaId,
-        doctorId,
-        doctorName,
-        precio,
-      });
-      return;
-    }
-
     safeNavigate('Schedule', { initialTab: 'pendientes' });
   };
 
@@ -807,7 +824,6 @@ export default function DashboardScreen({ navigation }: any) {
         'El nutriólogo ya no verá tu información. Puedes agendar nuevamente cuando quieras.'
       );
     } catch (error) {
-      console.error('Error denegando cita:', error);
       showAppointmentFeedback('Error', 'No se pudo denegar la cita. Intenta nuevamente.', true);
     }
   };
@@ -864,7 +880,6 @@ export default function DashboardScreen({ navigation }: any) {
               if (error) throw error;
               setNotifications([]);
             } catch (error) {
-              console.error('Error eliminando notificaciones:', error);
               Alert.alert('Error', 'No se pudieron eliminar las notificaciones');
             }
           }
@@ -877,7 +892,6 @@ export default function DashboardScreen({ navigation }: any) {
   const handleAcceptAppointment = async (notification: any) => {
     try {
       const datos = notification.datos_adicionales || {};
-      
       // Actualizar estado de la cita
       const { error: citaError } = await supabase
         .from('citas')
@@ -903,10 +917,11 @@ export default function DashboardScreen({ navigation }: any) {
       // Marcar notificación original como leída
       await markAsRead(notification.id_notificacion);
 
-      Alert.alert('Éxito', 'Cita confirmada correctamente');
+      // Redirigir automáticamente a la pantalla de pago
+      setNotificationsVisible(false);
+      safeNavigate('Schedule', { initialTab: 'pendientes', fromNotificationTap: true, openPaymentForCita: datos.id_cita });
       await loadNotifications(); // Recargar notificaciones
     } catch (error) {
-      console.error('Error aceptando cita:', error);
       Alert.alert('Error', 'No se pudo confirmar la cita');
     }
   };
@@ -944,7 +959,6 @@ export default function DashboardScreen({ navigation }: any) {
       showAppointmentFeedback('Cita rechazada', 'Puedes agendar una nueva cita con otro nutriólogo');
       await loadNotifications(); // Recargar notificaciones
     } catch (error) {
-      console.error('Error rechazando cita:', error);
       showAppointmentFeedback('Error', 'No se pudo rechazar la cita', true);
     }
   };
@@ -1116,7 +1130,7 @@ export default function DashboardScreen({ navigation }: any) {
           <View style={styles.pointsRow}>
             <View>
               <Text style={styles.pointsLabel}>PUNTOS ACUMULADOS</Text>
-              <Text style={styles.pointsValue}>{localUserPoints}</Text>
+              <Text style={styles.pointsValue}>{formatPoints(localUserPoints)}</Text>
             </View>
           </View>
 

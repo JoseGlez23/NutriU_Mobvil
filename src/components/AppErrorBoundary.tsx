@@ -40,7 +40,7 @@ class AppErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error) {
-    console.error('[AppErrorBoundary] Error capturado:', error);
+    // Error capturado, log eliminado para producción
   }
 
   handleRetry = () => {

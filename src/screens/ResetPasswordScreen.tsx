@@ -34,11 +34,7 @@ export default function ResetPasswordScreen({ route }: any) {
         return;
       }
 
-      try {
-        (navigation as any).navigate('Login');
-      } catch {
-        (navigation as any).navigate('Dashboard');
-      }
+      (navigation as any).navigate('Login');
     } catch (err) {
       console.error('No se pudo salir de ResetPassword:', err);
     }

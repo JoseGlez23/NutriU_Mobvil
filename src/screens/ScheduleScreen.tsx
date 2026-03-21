@@ -30,6 +30,9 @@ import { CardField, useStripe } from '@stripe/stripe-react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { saveToCache, getFromCache } from '../utils/offlineCache';
 import { useNetwork } from '../utils/NetworkHandler';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
 
 const { width } = Dimensions.get('window');
 
@@ -161,6 +164,58 @@ const getCanjePreview = (basePrice: number, canjePaciente: any) => {
   };
 };
 
+const logScheduleWarning = (message: string, error?: any) => {};
+
+const buildReceiptPdfHtml = (receipt: any, logoBase64: string = '') => {
+  const logoImg = logoBase64 ? `<img src="data:image/png;base64,${logoBase64}" style="width: 80px; margin: 0 auto 10px; display: block;" />` : '';
+  return `
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Comprobante NutriU</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; padding: 24px; color: #1a3026; background: #f5fbf7; }
+      .card { max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #d1e8d5; border-radius: 14px; overflow: hidden; }
+      .header { background: #2e8b57; color: #fff; padding: 20px; }
+      .header h1 { margin: 0; font-size: 21px; }
+      .header p { margin: 6px 0 0; font-size: 13px; opacity: .95; }
+      .section { padding: 16px 20px; border-bottom: 1px solid #e8f2eb; }
+      .row { display: flex; justify-content: space-between; gap: 10px; margin: 8px 0; }
+      .label { font-size: 13px; color: #4a4a4a; }
+      .value { font-size: 13px; color: #1a3026; font-weight: 700; text-align: right; }
+      .total { color: #2e8b57; font-size: 20px; font-weight: 900; }
+      .footer { padding: 14px 20px; background: #f8fbf9; font-size: 12px; color: #4a4a4a; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="header">
+        ${logoImg}
+        <h1>Comprobante de pago - NutriU</h1>
+        <p>Referencia Stripe: ${receipt.paymentIntentId || 'N/D'}</p>
+      </div>
+      <div class="section">
+        <div class="row"><span class="label">Paciente</span><span class="value">${receipt.patientName || 'Paciente'}</span></div>
+        <div class="row"><span class="label">Correo</span><span class="value">${receipt.patientEmail || 'N/D'}</span></div>
+      </div>
+      <div class="section">
+        <div class="row"><span class="label">Nutriólogo</span><span class="value">${receipt.nutriologoName || 'Nutriólogo'}</span></div>
+        <div class="row"><span class="label">Especialidad</span><span class="value">${receipt.nutriologoSpecialty || 'Nutrición'}</span></div>
+        <div class="row"><span class="label">Fecha de la cita</span><span class="value">${receipt.appointmentDate || 'N/D'}</span></div>
+      </div>
+      <div class="section">
+        <div class="row"><span class="label">Monto pagado</span><span class="value total">$${receipt.amount || '0.00'} MXN</span></div>
+        <div class="row"><span class="label">Estado</span><span class="value">${receipt.paymentStatus || 'completado'}</span></div>
+        <div class="row"><span class="label">Fecha de pago</span><span class="value">${receipt.paymentDate || 'N/D'}</span></div>
+      </div>
+      <div class="footer">Comprobante generado desde la app móvil NutriU.</div>
+    </div>
+  </body>
+</html>`;
+};
+
 export default function ScheduleScreen({ navigation, route }: any) {
   const { user: authUser } = useAuth();
   const { user: patientData, refreshUser } = useUser();
@@ -192,6 +247,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
 
   const [selectedAppointment, setSelectedAppointment] = useState<any>(null);
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
+  const [downloadingReceiptFor, setDownloadingReceiptFor] = useState<number | null>(null);
 
   const [nutriologoAssignedModal, setNutriologoAssignedModal] = useState(false);
   const [nutriologoInfoModal, setNutriologoInfoModal] = useState(false);
@@ -204,8 +260,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
   }, [selectedDoctor?.price, selectedCanjePaciente]);
 
   const loadAvailableCanjes = useCallback(async (nutriologoId: number) => {
-    // Cargar canjes reclamados pendientes (tabla real: canje_recompensas).
-    // El backend de pago valida id_canje sobre canje_recompensas.
     if (!patientData?.id_paciente) {
       setAvailableCanjes([]);
       setSelectedCanjePaciente(null);
@@ -236,7 +290,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
       const { data: canjesPaciente, error } = await query;
 
       if (error) {
-        console.warn('[ScheduleScreen] No se pudieron cargar canjes del paciente:', error.message);
         setAvailableCanjes([]);
         setSelectedCanjePaciente(null);
         return;
@@ -273,7 +326,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
         return stillExists || null;
       });
     } catch (error) {
-      console.error('Error cargando canjes disponibles:', error);
       setAvailableCanjes([]);
       setSelectedCanjePaciente(null);
     } finally {
@@ -281,8 +333,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     }
   }, [patientData?.id_paciente, selectedDoctor?.realId]);
 
-  // Re-disparar carga de canjes cuando patientData termina de hidratarse
-  // (cubre el caso donde el componente monta antes de que useUser resuelva el perfil)
   const lastNutriologoIdRef = useRef<number>(0);
   const lastProcessedRouteCitaIdRef = useRef<number | null>(null);
   useEffect(() => {
@@ -308,7 +358,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     });
   };
 
-  // Detectar si viene desde Calendar con citaId
   useEffect(() => {
     const incomingCitaId = Number(route.params?.citaId);
     if (incomingCitaId && lastProcessedRouteCitaIdRef.current !== incomingCitaId) {
@@ -337,7 +386,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     }
   }, [route.params?.initialTab]);
 
-  // Animaciones de loading
   const pulseValue = useRef(new Animated.Value(1)).current;
   const rotateValue = useRef(new Animated.Value(0)).current;
   const scaleValue = useRef(new Animated.Value(1)).current;
@@ -391,7 +439,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     }
   }, [loading, appointmentsLoading]);
 
-  // Función para refrescar datos (pull-to-refresh)
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     
@@ -404,7 +451,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     setRefreshing(false);
   }, [viewMode]);
 
-  // Función para cargar doctores
   const fetchDoctors = async () => {
     const cacheKey = 'schedule_doctors';
 
@@ -418,7 +464,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
 
       const netInfo = await NetInfo.fetch();
       const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
-
       if (!isOnline) {
         notifyOffline();
         if (!Array.isArray(cachedDoctors) || cachedDoctors.length === 0) {
@@ -434,7 +479,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
         .order('nombre');
 
       if (error) {
-        console.error('Error al cargar nutriólogos:', error.message);
         if (!Array.isArray(cachedDoctors) || cachedDoctors.length === 0) {
           Alert.alert('Error', 'No se pudieron cargar los nutriólogos. Intenta más tarde.');
         }
@@ -446,7 +490,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
       setDoctors(formatted);
       await saveToCache(cacheKey, formatted);
     } catch (err) {
-      console.error('Excepción al cargar nutriólogos:', err);
       const cachedDoctors = await getFromCache('schedule_doctors');
       if (!Array.isArray(cachedDoctors) || cachedDoctors.length === 0) {
         Alert.alert('Error', 'No se pudieron cargar los nutriólogos. Intenta más tarde.');
@@ -456,7 +499,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
     }
   };
 
-  // Función para cargar citas
   const fetchAppointments = async () => {
     if (!patientData?.id_paciente) return;
 
@@ -472,6 +514,13 @@ export default function ScheduleScreen({ navigation, route }: any) {
     try {
       setAppointmentsLoading(true);
 
+      const netInfo = await NetInfo.fetch();
+      const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
+      if (!isOnline) {
+        notifyOffline();
+        return;
+      }
+
       // Obtener fecha de asignación ACTIVA para mostrar solo citas del ciclo actual
       const { data: relationData, error: relationError } = await supabase
         .from('paciente_nutriologo')
@@ -483,7 +532,8 @@ export default function ScheduleScreen({ navigation, route }: any) {
         .limit(1);
 
       if (relationError) {
-        throw relationError;
+        logScheduleWarning('', relationError);
+        return;
       }
 
       const relationStartDate = relationData?.[0]?.fecha_asignacion || null;
@@ -523,8 +573,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
         .order('fecha_hora', { ascending: false });
 
       if (error) {
-        console.error('Error al cargar citas:', error.message);
-        Alert.alert('Error', 'No se pudieron cargar tus citas. Intenta más tarde.');
+        logScheduleWarning('', error);
         return;
       }
 
@@ -606,7 +655,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
       setPaidPendingAppointments(paidPending);
       setConfirmedAppointments(confirmedForActiveNutriologo);
     } catch (err) {
-      console.error('Excepción al cargar citas:', err);
+      logScheduleWarning('', err);
       setActiveRelationSince(null);
       setPendingPaymentAppointments([]);
       setPaidPendingAppointments([]);
@@ -616,12 +665,10 @@ export default function ScheduleScreen({ navigation, route }: any) {
     }
   };
 
-  // Cargar nutriólogos
   useEffect(() => {
     fetchDoctors();
   }, []);
 
-  // Cargar citas del paciente
   useEffect(() => {
     fetchAppointments();
   }, [patientData?.id_paciente, nutriologo?.id_nutriologo]);
@@ -640,16 +687,11 @@ export default function ScheduleScreen({ navigation, route }: any) {
       setNutriologoAssignedModal(true);
       return;
     }
-
-    // Verificar si ya es su nutriólogo de cabecera
     if (nutriologo && nutriologo.id_nutriologo === doctor.realId) {
-      // Mostrar modal informativo
       setSelectedDoctor(doctor);
       setNutriologoInfoModal(true);
-      return; // ✅ NO NAVEGA A CALENDAR, NO COBRA
+      return;
     }
-    
-    // Si no es su nutriólogo, proceder normalmente
     navigation.navigate('Calendar', {
       doctorName: doctor.name,
       doctorId: doctor.realId,
@@ -684,7 +726,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
               await fetchAppointments();
               Alert.alert('Listo', 'Se limpiaron las citas confirmadas.');
             } catch (err) {
-              console.error('Error limpiando confirmadas:', err);
               Alert.alert('Error', 'No se pudieron limpiar las citas confirmadas.');
             }
           },
@@ -704,6 +745,55 @@ export default function ScheduleScreen({ navigation, route }: any) {
     setSelectedCanjePaciente(null);
     await loadAvailableCanjes(Number(appointment.id_nutriologo));
     setPaymentStep('checkout');
+  };
+
+  const downloadPaymentReceipt = async (appointment: any) => {
+    const paymentIntentId = String(appointment?.pagoInfo?.stripe_payment_id || '').trim();
+    if (!paymentIntentId) {
+      Alert.alert('Comprobante no disponible', 'Aún no se encontró el identificador de pago para esta cita.');
+      return;
+    }
+
+    setDownloadingReceiptFor(Number(appointment?.id || 0));
+    try {
+      // Leer y convertir logo a base64
+      let logoBase64 = '';
+      try {
+        const logoPath = `${FileSystem.documentDirectory}/../../../assets/logotipo_mini.png`;
+        const logoFile = require('../../assets/logotipo_mini.png');
+        const logoUri = Image.resolveAssetSource(logoFile).uri;
+        logoBase64 = await FileSystem.readAsStringAsync(logoUri, { encoding: 'base64' });
+      } catch (logoError) {
+        console.warn('No se pudo cargar el logo:', logoError);
+        // Continuar sin logo si hay error
+      }
+
+      const response = await fetch(`${BACKEND_URL}/payments/receipt/${encodeURIComponent(paymentIntentId)}`);
+      const payload = await response.json();
+
+      if (!response.ok || !payload?.receipt) {
+        throw new Error(payload?.error || 'No se pudo obtener el comprobante.');
+      }
+
+      const receipt = payload.receipt;
+      const html = buildReceiptPdfHtml(receipt, logoBase64);
+      const { uri } = await Print.printToFileAsync({ html });
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Descargar comprobante de pago',
+          UTI: '.pdf',
+        });
+      } else {
+        Alert.alert('Comprobante generado', `Se creó el PDF en: ${uri}`);
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error?.message || 'No se pudo descargar el comprobante.');
+    } finally {
+      setDownloadingReceiptFor(null);
+    }
   };
 
   const handlePayment = async () => {
@@ -756,7 +846,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
         if (!fallbackError && fallbackCitas && fallbackCitas.length > 0) {
           effectiveCitaId = Number(fallbackCitas[0].id_cita);
           setCitaId(effectiveCitaId);
-          console.warn('[ScheduleScreen] Se reemplazó citaId desactualizada por:', effectiveCitaId);
         } else {
           await fetchAppointments();
           closeModal();
@@ -782,7 +871,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
       });
 
       const text = await response.text();
-      console.log('Respuesta del backend (create-payment-intent):', text);
 
       if (!response.ok) {
         let backendMessage = '';
@@ -841,8 +929,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
 
       // 🔥 VERIFICAR RELACIÓN CON NUTRIÓLOGO
       try {
-        console.log('📝 Verificando relación con nutriólogo...');
-        
         // Verificar si ya tiene una relación activa con este nutriólogo
         const { data: relacionExistente } = await supabase
           .from('paciente_nutriologo')
@@ -852,9 +938,6 @@ export default function ScheduleScreen({ navigation, route }: any) {
           .maybeSingle();
 
         if (relacionExistente) {
-          // Ya tiene relación con este nutriólogo
-          console.log('⚠️ Ya tiene relación con este nutriólogo - solo actualizando a activo');
-          
           // Actualizar a activo si estaba inactivo
           if (!relacionExistente.activo) {
             await supabase
@@ -864,10 +947,8 @@ export default function ScheduleScreen({ navigation, route }: any) {
           }
         } else {
           // No tiene relación, crear nueva
-          console.log('✅ Creando nueva relación con nutriólogo');
-          
           const nutriologoId = Number(selectedDoctor.realId);
-          
+
           // Desactivar relaciones anteriores con otros nutriólogos
           await supabase
             .from('paciente_nutriologo')
@@ -1243,14 +1324,29 @@ export default function ScheduleScreen({ navigation, route }: any) {
                         <Ionicons name="checkmark-circle" size={14} color={COLORS.paid} />
                         <Text style={styles.statusBadgeText}>Pagada - Pendiente</Text>
                       </View>
-                      
-                      <TouchableOpacity 
-                        style={styles.viewDetailsButton}
-                        onPress={() => showAppointmentDetails(appointment)}
-                      >
-                        <Text style={styles.viewDetailsText}>Ver detalles</Text>
-                        <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-                      </TouchableOpacity>
+
+                      <View style={styles.appointmentActionsRow}>
+                        <TouchableOpacity
+                          style={styles.iconButton}
+                          onPress={() => downloadPaymentReceipt(appointment)}
+                          disabled={downloadingReceiptFor === appointment.id}
+                          activeOpacity={0.6}
+                        >
+                          {downloadingReceiptFor === appointment.id ? (
+                            <ActivityIndicator size="small" color={COLORS.primary} />
+                          ) : (
+                            <Ionicons name="download" size={18} color={COLORS.primary} />
+                          )}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                          style={styles.iconButton}
+                          onPress={() => showAppointmentDetails(appointment)}
+                          activeOpacity={0.6}
+                        >
+                          <Ionicons name="information-circle" size={18} color={COLORS.primary} />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </View>
                 ))}
@@ -1473,6 +1569,24 @@ export default function ScheduleScreen({ navigation, route }: any) {
                   </TouchableOpacity>
                 )}
 
+                {selectedAppointment.tienePago && (
+                  <TouchableOpacity
+                    style={detailsModalStyles.downloadButton}
+                    onPress={() => downloadPaymentReceipt(selectedAppointment)}
+                    disabled={downloadingReceiptFor === selectedAppointment.id}
+                  >
+                    {downloadingReceiptFor === selectedAppointment.id ? (
+                      <ActivityIndicator size="small" color={COLORS.white} />
+                    ) : (
+                      <>
+                        <Ionicons name="download" size={16} color={COLORS.white} />
+                        <Text style={detailsModalStyles.downloadButtonText}>DESCARGAR COMPROBANTE</Text>
+                        <Ionicons name="download-outline" size={18} color={COLORS.white} />
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity 
                   style={detailsModalStyles.closeButton2}
                   onPress={() => setDetailsModalVisible(false)}
@@ -1550,7 +1664,7 @@ export default function ScheduleScreen({ navigation, route }: any) {
                         {/* Sección de recompensas: solo se muestra si hay canjes o si está cargando */}
                         {(loadingCanjes || availableCanjes.length > 0) && (
                         <View style={styles.canjesCheckoutSection}>
-                          <Text style={styles.canjesCheckoutTitle}>🎁 Mis recompensas</Text>
+                          <Text style={styles.canjesCheckoutTitle}>Mis recompensas</Text>
                           <Text style={styles.canjesCheckoutSubtitle}>
                             Aplica una recompensa ganada a esta consulta.
                           </Text>
@@ -1591,9 +1705,10 @@ export default function ScheduleScreen({ navigation, route }: any) {
                                     onPress={() => setSelectedCanjePaciente(canjePaciente)}
                                   >
                                     <View style={styles.canjeOptionContent}>
-                                      <Text style={styles.canjeOptionTitle}>{canjePaciente.canjes?.nombre_canje}</Text>
-                                      <Text style={styles.canjeOptionDescription}>
-                                        {preview.descripcion || 'Canje disponible'}
+                                      <Text style={styles.canjeOptionTitle}>
+                                        {canjePaciente.canjes?.tipo_canje === 'descuento'
+                                          ? `${canjePaciente.canjes?.valor_descuento}% de descuento`
+                                          : canjePaciente.canjes?.nombre_canje}
                                       </Text>
                                       {preview.eligible ? (
                                         <Text style={styles.canjeOptionSavings}>
@@ -1922,8 +2037,8 @@ const styles = StyleSheet.create({
   appointmentDoctor: { fontSize: 16, fontWeight: '900', color: COLORS.primary },
   appointmentDateTime: { fontSize: 12, color: COLORS.textLight, marginTop: 2, fontWeight: '600' },
   appointmentFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 12 },
-  viewDetailsButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.secondary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: COLORS.primary },
-  viewDetailsText: { fontSize: 12, color: COLORS.primary, fontWeight: '800', marginRight: 4 },
+  appointmentActionsRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  iconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.secondary, justifyContent: 'center', alignItems: 'center' },
   payNowButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, gap: 6 },
   payNowText: { fontSize: 12, color: COLORS.white, fontWeight: '900' },
   statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -2183,6 +2298,21 @@ const detailsModalStyles = StyleSheet.create({
   payButtonText: {
     color: COLORS.white,
     fontSize: 16,
+    fontWeight: '900',
+  },
+  downloadButton: {
+    backgroundColor: COLORS.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 12,
+    gap: 8,
+  },
+  downloadButtonText: {
+    color: COLORS.white,
+    fontSize: 14,
     fontWeight: '900',
   },
   closeButton2: {

@@ -112,13 +112,22 @@ const AnimatedProfessionalBackground = () => {
 };
 
 export default function LoginScreen({ navigation }: any) {
-  const { signIn, signUp, resetPassword } = useAuth();
+  const { signIn, signUp, resetPassword, verifyPasswordResetOtp, completePasswordReset, abortPasswordResetFlow } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [showRecoveryPassword, setShowRecoveryPassword] = useState(false);
   const [modalVisible, setModalVisible] = useState({ show: false, title: '', message: '' });
   const [selectedGender, setSelectedGender] = useState<string>('');
+  const [recoveryModalVisible, setRecoveryModalVisible] = useState(false);
+  const [recoveryNoticeVisible, setRecoveryNoticeVisible] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [recoveryStep, setRecoveryStep] = useState<'verify-code' | 'new-password'>('verify-code');
+  const [confirmingRecovery, setConfirmingRecovery] = useState(false);
 
   const [form, setForm] = useState({
     nombre: '',
@@ -268,11 +277,12 @@ export default function LoginScreen({ navigation }: any) {
       const result = await resetPassword(email);
 
       if (result.success) {
-        Alert.alert(
-          'Enlace enviado',
-          'Te hemos enviado un enlace para restablecer tu contraseña. Revisa tu correo (incluyendo spam).',
-          [{ text: 'OK' }]
-        );
+        setRecoveryEmail(email.toLowerCase());
+        setRecoveryCode('');
+        setRecoveryNewPassword('');
+        setRecoveryConfirmPassword('');
+        setRecoveryStep('verify-code');
+        setRecoveryNoticeVisible(true);
       } else {
         // Si es error de rate limit, solo mostrar alerta sin mensaje en pantalla
         if (result.error && (result.error.includes('límite temporal') || result.error.includes('excedido'))) {
@@ -289,6 +299,67 @@ export default function LoginScreen({ navigation }: any) {
       showAlert('Error', 'Ocurrió un error inesperado al enviar el enlace.');
     } finally {
       setRecoveryLoading(false);
+    }
+  };
+
+  const handleVerifyRecoveryCode = async () => {
+    if (!recoveryCode.trim()) {
+      showAlert('Atención', 'Ingresa el código de verificación que llegó a tu correo.');
+      return;
+    }
+
+    setConfirmingRecovery(true);
+    try {
+      const result = await verifyPasswordResetOtp(recoveryEmail, recoveryCode);
+      if (!result.success) {
+        showAlert('Error', result.error || 'No se pudo verificar el código.');
+        return;
+      }
+
+      setRecoveryStep('new-password');
+    } finally {
+      setConfirmingRecovery(false);
+    }
+  };
+
+  const handleConfirmRecovery = async () => {
+    if (!recoveryNewPassword.trim() || !recoveryConfirmPassword.trim()) {
+      showAlert('Atención', 'Ingresa y confirma tu nueva contraseña.');
+      return;
+    }
+
+    if (recoveryNewPassword !== recoveryConfirmPassword) {
+      showAlert('Atención', 'Las contraseñas no coinciden.');
+      return;
+    }
+
+    if (recoveryNewPassword.length < 6) {
+      showAlert('Atención', 'La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+
+    setConfirmingRecovery(true);
+    try {
+      const result = await completePasswordReset(recoveryNewPassword);
+
+      if (!result.success) {
+        showAlert('Error', result.error || 'No se pudo cambiar la contraseña.');
+        return;
+      }
+
+      setRecoveryModalVisible(false);
+      setRecoveryStep('verify-code');
+      setRecoveryCode('');
+      setRecoveryNewPassword('');
+      setRecoveryConfirmPassword('');
+
+      Alert.alert(
+        'Contraseña actualizada',
+        'Tu contraseña fue cambiada correctamente. Ahora inicia sesión con tu nueva contraseña.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setConfirmingRecovery(false);
     }
   };
 
@@ -454,6 +525,165 @@ export default function LoginScreen({ navigation }: any) {
         </View>
       </Modal>
 
+      <Modal
+        visible={recoveryNoticeVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={async () => {
+          setRecoveryNoticeVisible(false);
+          await abortPasswordResetFlow();
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.recoveryNoticeCard}>
+            <View style={styles.recoveryNoticeIconWrap}>
+              <Ionicons name="mail-unread-outline" size={28} color={COLORS.primary} />
+            </View>
+            <Text style={styles.recoveryNoticeTitle}>Código enviado</Text>
+            <Text style={styles.recoveryNoticeText}>
+              Enviamos un código de verificación a:{'\n'}
+              <Text style={styles.recoveryNoticeEmail}>{recoveryEmail}</Text>
+            </Text>
+            <Text style={styles.recoveryNoticeHint}>
+              Al continuar podrás validar el código y después definir tu nueva contraseña.
+            </Text>
+
+            <TouchableOpacity
+              style={styles.recoveryNoticeBtn}
+              onPress={() => {
+                setRecoveryNoticeVisible(false);
+                setRecoveryModalVisible(true);
+              }}
+            >
+              <Text style={styles.recoveryNoticeBtnText}>Aceptar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={recoveryModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={async () => {
+          if (!confirmingRecovery) {
+            setRecoveryModalVisible(false);
+            setRecoveryStep('verify-code');
+            await abortPasswordResetFlow();
+          }
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {recoveryStep === 'verify-code' ? (
+              <>
+                <Text style={styles.modalTitle}>Verificar código</Text>
+                <Text style={styles.modalMessage}>
+                  Ingresa el código numérico que llegó a {recoveryEmail}.
+                </Text>
+
+                <View style={styles.recoveryInputWrapper}>
+                  <Ionicons name="key-outline" size={20} color={COLORS.primary} style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Código de verificación"
+                    placeholderTextColor="#999"
+                    value={recoveryCode}
+                    onChangeText={setRecoveryCode}
+                    keyboardType="number-pad"
+                    editable={!confirmingRecovery}
+                  />
+                </View>
+
+                <View style={styles.recoveryActionsRow}>
+                  <TouchableOpacity
+                    style={[styles.recoverySecondaryBtn, confirmingRecovery && { opacity: 0.6 }]}
+                    onPress={async () => {
+                      setRecoveryModalVisible(false);
+                      setRecoveryStep('verify-code');
+                      await abortPasswordResetFlow();
+                    }}
+                    disabled={confirmingRecovery}
+                  >
+                    <Text style={styles.recoverySecondaryBtnText}>Cancelar</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.recoveryPrimaryBtn, confirmingRecovery && { opacity: 0.7 }]}
+                    onPress={handleVerifyRecoveryCode}
+                    disabled={confirmingRecovery}
+                  >
+                    {confirmingRecovery ? (
+                      <ActivityIndicator size="small" color={COLORS.white} />
+                    ) : (
+                      <Text style={styles.recoveryPrimaryBtnText}>Verificar</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalTitle}>Nueva contraseña</Text>
+                <Text style={styles.modalMessage}>
+                  Código validado. Ahora define tu nueva contraseña.
+                </Text>
+
+                <View style={styles.recoveryInputWrapper}>
+                  <Ionicons name="lock-closed-outline" size={20} color={COLORS.primary} style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Nueva contraseña"
+                    placeholderTextColor="#999"
+                    value={recoveryNewPassword}
+                    onChangeText={setRecoveryNewPassword}
+                    secureTextEntry={!showRecoveryPassword}
+                    editable={!confirmingRecovery}
+                  />
+                  <TouchableOpacity onPress={() => setShowRecoveryPassword(!showRecoveryPassword)}>
+                    <Ionicons name={showRecoveryPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={COLORS.textLight} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.recoveryInputWrapper}>
+                  <Ionicons name="shield-checkmark-outline" size={20} color={COLORS.primary} style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Confirmar nueva contraseña"
+                    placeholderTextColor="#999"
+                    value={recoveryConfirmPassword}
+                    onChangeText={setRecoveryConfirmPassword}
+                    secureTextEntry={!showRecoveryPassword}
+                    editable={!confirmingRecovery}
+                  />
+                </View>
+
+                <View style={styles.recoveryActionsRow}>
+                  <TouchableOpacity
+                    style={[styles.recoverySecondaryBtn, confirmingRecovery && { opacity: 0.6 }]}
+                    onPress={() => setRecoveryStep('verify-code')}
+                    disabled={confirmingRecovery}
+                  >
+                    <Text style={styles.recoverySecondaryBtnText}>Atrás</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.recoveryPrimaryBtn, confirmingRecovery && { opacity: 0.7 }]}
+                    onPress={handleConfirmRecovery}
+                    disabled={confirmingRecovery}
+                  >
+                    {confirmingRecovery ? (
+                      <ActivityIndicator size="small" color={COLORS.white} />
+                    ) : (
+                      <Text style={styles.recoveryPrimaryBtnText}>Cambiar</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {Platform.OS === 'ios' ? (
         <Modal visible={showDateModal} transparent animationType="slide" onRequestClose={() => setShowDateModal(false)}>
           <View style={styles.dateModalOverlay}>
@@ -582,6 +812,103 @@ const styles = StyleSheet.create({
   modalMessage: { fontSize: 14, color: COLORS.textLight, textAlign: 'center', marginBottom: 24, lineHeight: 20 },
   modalBtn: { paddingHorizontal: 32, paddingVertical: 12, borderRadius: 8, minWidth: 140 },
   modalBtnText: { color: COLORS.white, fontWeight: 'bold', fontSize: 13, textAlign: 'center' },
+  recoveryNoticeCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    width: '90%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E3EFE8',
+  },
+  recoveryNoticeIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#EAF8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  recoveryNoticeTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.textDark,
+    marginBottom: 8,
+  },
+  recoveryNoticeText: {
+    fontSize: 14,
+    color: COLORS.textLight,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  recoveryNoticeEmail: {
+    color: COLORS.primary,
+    fontWeight: '800',
+  },
+  recoveryNoticeHint: {
+    marginTop: 10,
+    marginBottom: 18,
+    fontSize: 13,
+    color: '#5B6A62',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  recoveryNoticeBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  recoveryNoticeBtnText: {
+    color: COLORS.white,
+    fontWeight: '800',
+    fontSize: 14,
+    letterSpacing: 0.4,
+  },
+  recoveryInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    marginBottom: 12,
+    paddingVertical: 8,
+    width: '100%',
+  },
+  recoveryActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    gap: 10,
+  },
+  recoverySecondaryBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.secondary,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  recoverySecondaryBtnText: {
+    color: COLORS.textLight,
+    fontWeight: '700',
+  },
+  recoveryPrimaryBtn: {
+    flex: 1,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  recoveryPrimaryBtnText: {
+    color: COLORS.white,
+    fontWeight: '700',
+  },
   dateModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.35)',

@@ -12,7 +12,8 @@ import {
   TextInput,
   Animated,
   Easing,
-  Modal
+  Modal,
+  Alert
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker'; 
@@ -33,7 +34,6 @@ const COLORS = {
   error: '#FF6B6B'
 };
 
-// ============ COMPONENTE INFOROW SEPARADO ============
 const InfoRow = React.memo(({ 
   label, 
   icon, 
@@ -52,12 +52,10 @@ const InfoRow = React.memo(({
     
     if (isNumeric) {
       if (label === 'Teléfono') {
-        // Solo permitir números y máximo 10 dígitos
         if (/^\d*$/.test(text) && text.length <= 10) {
           setEditedUser((prev: any) => ({ ...prev, [fieldKey]: text }));
         }
       } else {
-        // Permitir números y un punto decimal
         if (/^\d*(\.\d*)?$/.test(text)) {
           setEditedUser((prev: any) => ({ ...prev, [fieldKey]: text }));
         }
@@ -67,7 +65,6 @@ const InfoRow = React.memo(({
     }
   };
 
-  // Formatear el valor mostrado
   const displayValue = (() => {
     if (!value) return 'No registrado';
     if (label === 'Peso' && !value.includes('kg') && !isNaN(Number(value))) {
@@ -114,8 +111,6 @@ const InfoRow = React.memo(({
             styles.rowValue,
             label === 'Correo electrónico' && styles.rowValueEmail // Estilo especial para correo
           ]}
-          numberOfLines={1}
-          ellipsizeMode="tail"
         >
           {currentValue}
         </Text>
@@ -123,7 +118,6 @@ const InfoRow = React.memo(({
     </View>
   );
 }, (prevProps, nextProps) => {
-  // Control de re-renderizados solo cuando sea necesario
   return (
     prevProps.isEditing === nextProps.isEditing &&
     prevProps.editedUser?.[prevProps.fieldKey] === nextProps.editedUser?.[nextProps.fieldKey] &&
@@ -131,7 +125,6 @@ const InfoRow = React.memo(({
     prevProps.editable === nextProps.editable
   );
 });
-// ============ FIN COMPONENTE INFOROW ============
 
 export default function ProfileScreen({ navigation }: any) {
   const { user, loading, refreshUserData, error } = useUser();
@@ -143,6 +136,13 @@ export default function ProfileScreen({ navigation }: any) {
   const [localImageUri, setLocalImageUri] = useState<string | null>(null);
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [emailChangeStep, setEmailChangeStep] = useState(0);
+  const [emailChangePassword, setEmailChangePassword] = useState('');
+  const [emailChangeCurrentToken, setEmailChangeCurrentToken] = useState('');
+  const [emailChangeNewEmail, setEmailChangeNewEmail] = useState('');
+  const [emailChangeCurrentFinalToken, setEmailChangeCurrentFinalToken] = useState('');
+  const [emailChangeNewEmailToken, setEmailChangeNewEmailToken] = useState('');
+  const [isEmailChanging, setIsEmailChanging] = useState(false);
   const [photoModal, setPhotoModal] = useState({
     visible: false,
     title: '',
@@ -170,15 +170,12 @@ export default function ProfileScreen({ navigation }: any) {
     setPhotoModal((prev) => ({ ...prev, visible: false }));
   };
 
-  // Loading animation values
   const pulseValue = useRef(new Animated.Value(1)).current;
   const breatheValue = useRef(new Animated.Value(1)).current;
   const textOpacityValue = useRef(new Animated.Value(0.3)).current;
 
-  // Loading animation
   useEffect(() => {
     if (loading) {
-      // Pulse animation for the user icon
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseValue, {
@@ -196,7 +193,6 @@ export default function ProfileScreen({ navigation }: any) {
         ])
       ).start();
 
-      // Breathing animation for the circle background
       Animated.loop(
         Animated.sequence([
           Animated.timing(breatheValue, {
@@ -214,7 +210,6 @@ export default function ProfileScreen({ navigation }: any) {
         ])
       ).start();
 
-      // Pulsing text animation
       Animated.loop(
         Animated.sequence([
           Animated.timing(textOpacityValue, {
@@ -280,13 +275,11 @@ export default function ProfileScreen({ navigation }: any) {
 
   const uploadProfilePhoto = async (uri: string) => {
     try {
-      console.log('Subiendo foto desde:', uri);
 
       const fileExt = uri.split('.').pop() || 'jpg';
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `perfiles_mobile/${fileName}`;
 
-      console.log('Path destino:', filePath);
 
       const formData = new FormData();
       formData.append('file', {
@@ -303,18 +296,16 @@ export default function ProfileScreen({ navigation }: any) {
         });
 
       if (error) {
-        console.error('Error Supabase:', error.message);
         throw error;
       }
 
-      console.log('Subida OK:', data);
 
       const { data: urlData } = supabase.storage.from('perfiles').getPublicUrl(filePath);
       const publicUrl = urlData.publicUrl;
 
       if (!publicUrl) throw new Error('No URL pública');
 
-      console.log('URL pública:', publicUrl);
+      // Log eliminado para producción
 
       const { error: updateError } = await supabase
         .from('pacientes')
@@ -333,7 +324,6 @@ export default function ProfileScreen({ navigation }: any) {
         COLORS.primary
       );
     } catch (err) {
-      console.error('Error al subir foto:', err);
       showPhotoModal(
         'Error al subir foto',
         'No se pudo subir la foto. Intenta de nuevo.',
@@ -347,7 +337,6 @@ export default function ProfileScreen({ navigation }: any) {
     if (!editedUser) return;
 
     try {
-      // SOLO actualizar el nombre de usuario
       const { error } = await supabase
         .from('pacientes')
         .update({
@@ -366,7 +355,6 @@ export default function ProfileScreen({ navigation }: any) {
         COLORS.primary
       );
     } catch (err) {
-      console.error('Error al guardar:', err);
       showPhotoModal(
         'Error al guardar',
         'No se pudo guardar el cambio.',
@@ -407,7 +395,6 @@ export default function ProfileScreen({ navigation }: any) {
     return `${age} años`;
   };
 
-  // Obtener categoría del IMC
   const getBMICategory = (bmi: string) => {
     const bmiValue = parseFloat(bmi);
     if (bmiValue < 18.5) return 'Bajo peso';
@@ -415,6 +402,195 @@ export default function ProfileScreen({ navigation }: any) {
     if (bmiValue >= 25 && bmiValue < 30) return 'Sobrepeso';
     if (bmiValue >= 30) return 'Obesidad';
     return '';
+  };
+
+  const getEmailChangeFriendlyError = (err: any): string => {
+    const message = String(err?.message || err?.toString() || 'Error desconocido');
+    if (message.includes('Invalid login credentials')) return 'Contraseña incorrecta';
+    if (message.includes('invalid_credentials')) return 'Contraseña incorrecta';
+    if (message.includes('Email not confirmed')) return 'Tu correo no está confirmado';
+    if (message.includes('Token expired')) return 'El código expiró. Intenta de nuevo';
+    if (message.includes('invalid')) return 'Código o contraseña inválidos';
+    if (message.includes('not found')) return 'Usuario no encontrado';
+    if (message.includes('already')) return 'Este correo ya está registrado';
+    return message;
+  };
+
+  const resetEmailChangeModal = () => {
+    setEmailChangeStep(0);
+    setEmailChangePassword('');
+    setEmailChangeCurrentToken('');
+    setEmailChangeNewEmail('');
+    setEmailChangeCurrentFinalToken('');
+    setEmailChangeNewEmailToken('');
+  };
+
+  const syncPatientEmailFromAuth = async (): Promise<string | null> => {
+    try {
+      const { data: { user: updatedUser }, error } = await supabase.auth.getUser();
+      if (error || !updatedUser?.email) return null;
+      
+      const { error: updateError } = await supabase
+        .from('pacientes')
+        .update({ correo: updatedUser.email })
+        .eq('id_paciente', user.id_paciente);
+      
+      if (updateError) throw updateError;
+      return updatedUser.email;
+    } catch (err) {
+      return null;
+    }
+  };
+
+  const sendEmailChangeRequest = async () => {
+    const normalizedPassword = String(emailChangePassword || '').trim();
+    const normalizedNewEmail = String(emailChangeNewEmail || '').trim().toLowerCase();
+    
+    if (!normalizedPassword) {
+      showPhotoModal('Contraseña requerida', 'Ingresa tu contraseña para cambiar el correo.', 'warning-outline', '#FFA500');
+      return;
+    }
+    if (!normalizedNewEmail || !normalizedNewEmail.includes('@')) {
+      showPhotoModal('Email inválido', 'Ingresa un correo válido.', 'warning-outline', '#FFA500');
+      return;
+    }
+
+    try {
+      setIsEmailChanging(true);
+      const authUser = await supabase.auth.getUser();
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: String(authUser.data.user?.email || user?.correo || '').trim().toLowerCase(),
+        password: normalizedPassword,
+      });
+
+      if (signInError) {
+        showPhotoModal('Contraseña incorrecta', getEmailChangeFriendlyError(signInError), 'warning-outline', '#FFA500');
+        return;
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({ email: normalizedNewEmail });
+      if (updateError) throw updateError;
+
+      setEmailChangeStep(5);
+      showPhotoModal(
+        'Verifica tu email',
+        `Se han enviado códigos de verificación a ambos correos.`,
+        'mail-outline',
+        COLORS.primary
+      );
+    } catch (err) {
+      showPhotoModal('Error', getEmailChangeFriendlyError(err), 'close-circle-outline', COLORS.error);
+    } finally {
+      setIsEmailChanging(false);
+    }
+  };
+
+  const resendCurrentEmailCode = async () => {
+    try {
+      const authUser = await supabase.auth.getUser();
+      const currentEmail = String(authUser.data.user?.email || user?.correo || '').trim().toLowerCase();
+      const { error } = await supabase.auth.resend({
+        type: 'email_change' as any,
+        email: currentEmail,
+      });
+      if (error) {
+        showPhotoModal('Error', `No pudimos reenviar el código: ${error.message}`, 'warning-outline', '#FFA500');
+        return;
+      }
+      showPhotoModal('Código reenviado', `Se ha reenviado el código a ${currentEmail}.`, 'checkmark-circle-outline', COLORS.primary);
+      setEmailChangeCurrentFinalToken('');
+    } catch (err) {
+      showPhotoModal('Error', getEmailChangeFriendlyError(err), 'close-circle-outline', COLORS.error);
+    }
+  };
+
+  const resendNewEmailCode = async () => {
+    try {
+      const normalizedNewEmail = String(emailChangeNewEmail || '').trim().toLowerCase();
+      const { error } = await supabase.auth.resend({
+        type: 'email_change' as any,
+        email: normalizedNewEmail,
+      });
+      if (error) {
+        showPhotoModal('Error', `No pudimos reenviar el código: ${error.message}`, 'warning-outline', '#FFA500');
+        return;
+      }
+      showPhotoModal('Código reenviado', `Se ha reenviado el código a ${normalizedNewEmail}.`, 'checkmark-circle-outline', COLORS.primary);
+      setEmailChangeNewEmailToken('');
+    } catch (err) {
+      showPhotoModal('Error', getEmailChangeFriendlyError(err), 'close-circle-outline', COLORS.error);
+    }
+  };
+
+  const verifyCurrentEmailChangeConfirmation = async () => {
+    const authUser = await supabase.auth.getUser();
+    const currentEmail = String(authUser.data.user?.email || user?.correo || '').trim().toLowerCase();
+    const token = String(emailChangeCurrentFinalToken || '').trim().replace(/\s/g, '');
+
+    if (!token) {
+      showPhotoModal('Código requerido', 'Ingresa el código que recibió tu correo actual.', 'warning-outline', '#FFA500');
+      return;
+    }
+
+    try {
+      setIsEmailChanging(true);
+      const { error } = await supabase.auth.verifyOtp({
+        email: currentEmail,
+        token,
+        type: 'email_change' as any,
+      });
+
+      if (error) {
+        showPhotoModal('Código inválido', getEmailChangeFriendlyError(error), 'warning-outline', '#FFA500');
+        return;
+      }
+
+      setEmailChangeStep(6);
+      showPhotoModal('Primer paso confirmado', `Ahora ingresa el código de ${emailChangeNewEmail.trim().toLowerCase()}.`, 'checkmark-circle-outline', COLORS.primary);
+    } catch (err) {
+      showPhotoModal('Error', getEmailChangeFriendlyError(err), 'close-circle-outline', COLORS.error);
+    } finally {
+      setIsEmailChanging(false);
+    }
+  };
+
+  const verifyNewEmailTokenAndFinalize = async () => {
+    const normalizedNewEmail = String(emailChangeNewEmail || '').trim().toLowerCase();
+    const token = String(emailChangeNewEmailToken || '').trim().replace(/\s/g, '');
+
+    if (!token) {
+      showPhotoModal('Código requerido', 'Ingresa el código que llegó a tu nuevo correo.', 'warning-outline', '#FFA500');
+      return;
+    }
+
+    try {
+      setIsEmailChanging(true);
+      const { error } = await supabase.auth.verifyOtp({
+        email: normalizedNewEmail,
+        token,
+        type: 'email_change' as any,
+      });
+
+      if (error) {
+        showPhotoModal('Código inválido', getEmailChangeFriendlyError(error), 'warning-outline', '#FFA500');
+        return;
+      }
+
+      const { error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError) {
+      }
+      
+      const confirmedEmail = await syncPatientEmailFromAuth();
+      resetEmailChangeModal();
+
+      Alert.alert('¡Correo actualizado!', `Tu correo fue cambiado a ${confirmedEmail || normalizedNewEmail}.`);
+      await refreshUserData(true);
+      await signOut();
+    } catch (err) {
+      showPhotoModal('Error', getEmailChangeFriendlyError(err), 'close-circle-outline', COLORS.error);
+    } finally {
+      setIsEmailChanging(false);
+    }
   };
 
   // Loading component with animated user icon
@@ -496,7 +672,6 @@ export default function ProfileScreen({ navigation }: any) {
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="dark-content" />
         
-        {/* HEADER */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <Ionicons name="arrow-back-outline" size={24} color={COLORS.primary} />
@@ -524,7 +699,6 @@ export default function ProfileScreen({ navigation }: any) {
                   : { uri: profileImage }}
                 style={styles.avatar} 
                 key={profileImage}
-                onError={(e) => console.log('Error en Image:', e.nativeEvent.error)}
               />
               <TouchableOpacity style={styles.editPhotoBadge} onPress={pickImage}>
                 <Ionicons name="camera" size={18} color={COLORS.white} />
@@ -533,10 +707,17 @@ export default function ProfileScreen({ navigation }: any) {
             <Text style={styles.nameText}>
               {user.nombre} {user.apellido}
             </Text>
-            <Text style={styles.emailText}>{user.correo}</Text>
+            <View style={styles.emailRow}>
+              <Text style={styles.emailText}>{user.correo}</Text>
+              <TouchableOpacity 
+                style={styles.changeEmailButton}
+                onPress={() => setEmailChangeStep(1)}
+              >
+                <Ionicons name="swap-horizontal-outline" size={18} color={COLORS.primary} />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* ESTADÍSTICAS */}
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
               <MaterialCommunityIcons name="star-circle" size={32} color={COLORS.primary} />
@@ -552,13 +733,11 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
           </View>
 
-          {/* INFORMACIÓN PERSONAL */}
           <View style={styles.infoBox}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>DATOS PERSONALES</Text>
             </View>
 
-            {/* ÚNICO CAMPO EDITABLE: NOMBRE DE USUARIO */}
             <InfoRow 
               label="Nombre de usuario" 
               icon="at-outline" 
@@ -572,19 +751,10 @@ export default function ProfileScreen({ navigation }: any) {
               multiline={false}
             />
 
-            {/* CORREO ELECTRÓNICO - AHORA CON ESTILO ESPECIAL */}
             <InfoRow 
               label="Correo electrónico" 
               icon="mail-outline" 
               value={user.correo} 
-              editable={false}
-              isEditing={isEditing}
-            />
-
-            <InfoRow 
-              label="Teléfono" 
-              icon="call-outline" 
-              value={user.numero_celular} 
               editable={false}
               isEditing={isEditing}
             />
@@ -641,7 +811,6 @@ export default function ProfileScreen({ navigation }: any) {
               />
             </View>
 
-            {/* BOTÓN GUARDAR - SOLO VISIBLE EN MODO EDICIÓN */}
             {isEditing && (
               <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
                 <Text style={styles.saveButtonText}>Guardar Nombre de Usuario</Text>
@@ -649,7 +818,6 @@ export default function ProfileScreen({ navigation }: any) {
             )}
           </View>
 
-          {/* CERRAR SESIÓN */}
           <View style={styles.footer}>
             <TouchableOpacity onPress={openLogoutModal}>
               <Text style={styles.logoutText}>Cerrar Sesión</Text>
@@ -721,12 +889,127 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
           </View>
         </Modal>
+
+        {/* EMAIL CHANGE MODAL - 6 STEP FLOW */}
+        <Modal visible={emailChangeStep > 0} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              {emailChangeStep === 1 && (
+                <>
+                  <Ionicons name="lock-closed-outline" size={36} color={COLORS.primary} />
+                  <Text style={styles.modalTitle}>Confirma tu identidad</Text>
+                  <Text style={styles.modalMessage}>Ingresa tu contraseña actual para cambiar el correo.</Text>
+                  <TextInput
+                    style={styles.passwordVerificationInput}
+                    value={emailChangePassword}
+                    onChangeText={setEmailChangePassword}
+                    placeholder="Contraseña"
+                    placeholderTextColor={COLORS.textLight}
+                    secureTextEntry
+                    editable={!isEmailChanging}
+                  />
+                  <View style={styles.modalButtonsRow}>
+                    <TouchableOpacity style={styles.modalCancelButton} onPress={() => resetEmailChangeModal()} disabled={isEmailChanging}>
+                      <Text style={styles.modalCancelText}>Cancelar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.modalConfirmButton} onPress={() => setEmailChangeStep(2)} disabled={isEmailChanging}>
+                      <Text style={styles.modalConfirmText}>Continuar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+
+              {emailChangeStep === 2 && (
+                <>
+                  <Ionicons name="mail-outline" size={36} color={COLORS.primary} />
+                  <Text style={styles.modalTitle}>Nuevo correo electrónico</Text>
+                  <Text style={styles.modalMessage}>Ingresa el nuevo correo que deseas usar.</Text>
+                  <TextInput
+                    style={styles.passwordVerificationInput}
+                    value={emailChangeNewEmail}
+                    onChangeText={setEmailChangeNewEmail}
+                    placeholder="nuevo@correo.com"
+                    placeholderTextColor={COLORS.textLight}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    editable={!isEmailChanging}
+                  />
+                  <View style={styles.modalButtonsRow}>
+                    <TouchableOpacity style={styles.modalCancelButton} onPress={() => setEmailChangeStep(1)} disabled={isEmailChanging}>
+                      <Text style={styles.modalCancelText}>Atrás</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.modalConfirmButton} onPress={sendEmailChangeRequest} disabled={isEmailChanging}>
+                      {isEmailChanging ? <ActivityIndicator color={COLORS.white} size="small" /> : <Text style={styles.modalConfirmText}>Enviar</Text>}
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+
+              {emailChangeStep === 5 && (
+                <>
+                  <Ionicons name="mail-open-outline" size={36} color={COLORS.primary} />
+                  <Text style={styles.modalTitle}>Verifica tu correo actual</Text>
+                  <Text style={styles.modalMessage}>Ingresa el código enviado a tu correo actual.</Text>
+                  <TextInput
+                    style={styles.passwordVerificationInput}
+                    value={emailChangeCurrentFinalToken}
+                    onChangeText={setEmailChangeCurrentFinalToken}
+                    placeholder="Código"
+                    placeholderTextColor={COLORS.textLight}
+                    keyboardType="number-pad"
+                    editable={!isEmailChanging}
+                  />
+                  <TouchableOpacity style={styles.resendCodeButton} onPress={resendCurrentEmailCode} disabled={isEmailChanging}>
+                    <Ionicons name="refresh-outline" size={16} color={COLORS.primary} />
+                    <Text style={styles.resendCodeText}>Reenviar código</Text>
+                  </TouchableOpacity>
+                  <View style={styles.modalButtonsRow}>
+                    <TouchableOpacity style={styles.modalCancelButton} onPress={() => resetEmailChangeModal()} disabled={isEmailChanging}>
+                      <Text style={styles.modalCancelText}>Cancelar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.modalConfirmButton} onPress={verifyCurrentEmailChangeConfirmation} disabled={isEmailChanging}>
+                      {isEmailChanging ? <ActivityIndicator color={COLORS.white} size="small" /> : <Text style={styles.modalConfirmText}>Verificar</Text>}
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+
+              {emailChangeStep === 6 && (
+                <>
+                  <Ionicons name="key-outline" size={36} color={COLORS.primary} />
+                  <Text style={styles.modalTitle}>Verifica tu nuevo correo</Text>
+                  <Text style={styles.modalMessage}>Ingresa el código enviado a {emailChangeNewEmail.trim().toLowerCase()}.</Text>
+                  <TextInput
+                    style={styles.passwordVerificationInput}
+                    value={emailChangeNewEmailToken}
+                    onChangeText={setEmailChangeNewEmailToken}
+                    placeholder="Código"
+                    placeholderTextColor={COLORS.textLight}
+                    keyboardType="number-pad"
+                    editable={!isEmailChanging}
+                  />
+                  <TouchableOpacity style={styles.resendCodeButton} onPress={resendNewEmailCode} disabled={isEmailChanging}>
+                    <Ionicons name="refresh-outline" size={16} color={COLORS.primary} />
+                    <Text style={styles.resendCodeText}>Reenviar código</Text>
+                  </TouchableOpacity>
+                  <View style={styles.modalButtonsRow}>
+                    <TouchableOpacity style={styles.modalCancelButton} onPress={() => setEmailChangeStep(5)} disabled={isEmailChanging}>
+                      <Text style={styles.modalCancelText}>Atrás</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.modalConfirmButton} onPress={verifyNewEmailTokenAndFinalize} disabled={isEmailChanging}>
+                      {isEmailChanging ? <ActivityIndicator color={COLORS.white} size="small" /> : <Text style={styles.modalConfirmText}>Finalizar</Text>}
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
 }
 
-// ============ ESTILOS CORREGIDOS ============
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.white },
   loadingContainer: { 
@@ -857,6 +1140,17 @@ const styles = StyleSheet.create({
     fontWeight: '600', 
     marginTop: 2 
   },
+  emailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+    gap: 8,
+  },
+  changeEmailButton: {
+    padding: 6,
+    borderRadius: 12,
+    backgroundColor: COLORS.secondary,
+  },
 
   statsRow: {
     flexDirection: 'row',
@@ -905,7 +1199,6 @@ const styles = StyleSheet.create({
   },
   saveButtonText: { color: COLORS.white, fontWeight: '900', fontSize: 14 },
   
-  // ESTILOS CORREGIDOS PARA LAS FILAS
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -913,7 +1206,6 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.secondary,
-    flexWrap: 'wrap', // Permite que los elementos se envuelvan si es necesario
   },
   rowEditing: {
     backgroundColor: COLORS.secondary + '80',
@@ -923,36 +1215,25 @@ const styles = StyleSheet.create({
   rowLeft: { 
     flexDirection: 'row', 
     alignItems: 'center',
-    flex: 1, // Ocupa el espacio necesario
-    marginRight: 10, // Espacio entre el label y el valor
   },
   rowLabel: { 
     marginLeft: 12, 
     fontSize: 14, 
     fontWeight: '600', 
     color: COLORS.textLight,
-    flexShrink: 1, // Permite que el texto se encoja si es necesario
   },
   
-  // ESTILOS CORREGIDOS PARA EL VALOR (especialmente para correo)
   rowValue: { 
     fontSize: 14, 
     fontWeight: '800', 
     color: COLORS.textDark,
     textAlign: 'right',
-    maxWidth: '55%', // Límite de ancho
-    flexShrink: 1, // Permite que se encoja
   },
   
-  // ESTILO ESPECIAL PARA CORREO ELECTRÓNICO
   rowValueEmail: {
-    maxWidth: '60%', // Un poco más de ancho para correos largos
-    fontSize: 13, // Fuente ligeramente más pequeña para correos largos
   },
   
-  // ESTILO ESPECIAL PARA INPUT DE CORREO
   inputEmail: {
-    width: '60%', // Más ancho para correos
   },
   
   input: {
@@ -1052,5 +1333,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
     color: COLORS.white,
+  },
+  resendCodeButton: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: 'transparent',
+  },
+  resendCodeText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.primary,
+    marginLeft: 8,
+  },
+  modalConfirmButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.primary,
+    minHeight: 44,
+  },
+  modalConfirmText: {
+    fontSize: 14,
+    fontWeight: '900',
+    color: COLORS.white,
+  },
+  passwordVerificationInput: {
+    width: '100%',
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    fontSize: 14,
+    color: COLORS.textDark,
+    backgroundColor: COLORS.secondary,
   },
 });

@@ -14,19 +14,20 @@
       "backgroundColor": "#ffffff"
     },
     "notification": {
-      "icon": "./assets/icon2.png",
-      "color": "#FF6B6B",
+      "icon": "./assets/logotipo_mini.png",
+      "color": "#F0FFF4",
       "androidMode": "default",
       "androidCollapsedTitle": "NutriU"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.tunombre.nutriu"
+      "bundleIdentifier": "com.josemg.nutriu"
     },
     "android": {
+      "icon": "./assets/icon2.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/icon2.png",
+        "backgroundColor": "#F0FFF4"
       },
       "package": "com.tunombre.nutriu",
       "edgeToEdgeEnabled": true,
@@ -43,8 +44,8 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/icon2.png",
-          "color": "#FF6B6B",
+          "icon": "./assets/logotipo_mini.png",
+          "color": "#F0FFF4",
           "sounds": []
         }
       ],
@@ -55,9 +56,12 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
+      "supabaseUrl": "https://hthnkzwjotwqhvjgqhfv.supabase.co",
+      "supabaseAnonKey": "sb_publishable_KjVW1x9pLbfJ0cbH3UwlzQ_JzfO6Mbw",
       "eas": {
         "projectId": "0f9f6edb-a387-4eca-a8c7-942271397187"
       }

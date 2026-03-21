@@ -34,6 +34,7 @@ const TROPHIES = [
 
 // TTL ajustado a 10 segundos para reducir tiempo de carga inicial (caché más persistente pero fresco)
 const POINTS_CACHE_TTL = 10000;
+const formatPoints = (value: number) => Number(value || 0).toLocaleString('en-US');
 
 export default function PointsScreen({ navigation }: any) {
   const { user, refreshUserData, fetchUserPointsFast } = useUser();
@@ -46,6 +47,7 @@ export default function PointsScreen({ navigation }: any) {
   const [canjesDisponibles, setCanjesDisponibles] = useState<any[]>([]);
   const [loadingCanjes, setLoadingCanjes] = useState(false);
   const [claimingRewardId, setClaimingRewardId] = useState<number | null>(null);
+  const [expandedRewards, setExpandedRewards] = useState(false); // Accordion state
 
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -157,6 +159,7 @@ export default function PointsScreen({ navigation }: any) {
       const points = await fetchUserPointsFast();
       const puntosTotales = Number(points?.puntos_totales || 0);
 
+      // Consultar solo las columnas que existen en la tabla
       const { data: recompensas, error } = await supabase
         .from('recompensas')
         .select('id_recompensa, nombre, descripcion, tipo_recompensa, puntos_requeridos, activa')
@@ -167,6 +170,10 @@ export default function PointsScreen({ navigation }: any) {
         .from('canje_recompensas')
         .select('id_recompensa, estado')
         .eq('id_paciente', user.id_paciente);
+
+      console.log('[PointsScreen] DEBUG - Recompensas cargadas:', recompensas);
+      console.log('[PointsScreen] DEBUG - Error:', error);
+      console.log('[PointsScreen] DEBUG - puntosTotales:', puntosTotales);
 
       if (error) {
         console.warn('[PointsScreen] No se pudieron cargar recompensas:', error.message);
@@ -180,21 +187,37 @@ export default function PointsScreen({ navigation }: any) {
           .map((item: any) => Number(item.id_recompensa))
       );
 
-      const mappedCanjes = (recompensas || []).map((reward: any) => ({
-        id_canje_paciente: `reward-${reward.id_recompensa}`,
-        id_recompensa: reward.id_recompensa,
-        desbloqueado: reward.puntos_requeridos <= puntosTotales,
-        yaReclamado: claimedSet.has(Number(reward.id_recompensa)),
-        canjes: {
-          id_canje: reward.id_recompensa,
-          nombre_canje: reward.nombre,
-          tipo_canje: reward.tipo_recompensa === 'descuento' ? 'descuento' : 'consulta_gratis',
-          valor_descuento: reward.tipo_recompensa === 'descuento' ? null : null,
-          cantidad_consultas: 1,
-          descripcion: reward.descripcion,
-          puntos_requeridos: reward.puntos_requeridos,
+      const mappedCanjes = (recompensas || []).map((reward: any) => {
+        // El nombre ya contiene el valor (15, 30, etc.)
+        // Extraer solo el número del campo nombre (ej: '13% de descuento' → 13)
+        let discountValue = 0;
+        if (reward.tipo_recompensa === 'descuento') {
+          const match = String(reward.nombre).match(/(\d+)/);
+          if (match) {
+            discountValue = Number(match[1]);
+          }
         }
-      }));
+
+        const mapped = {
+          id_canje_paciente: `reward-${reward.id_recompensa}`,
+          id_recompensa: reward.id_recompensa,
+          desbloqueado: reward.puntos_requeridos <= puntosTotales,
+          yaReclamado: claimedSet.has(Number(reward.id_recompensa)),
+          canjes: {
+            id_canje: reward.id_recompensa,
+            nombre_canje: reward.nombre, // Contiene el valor: "15", "30", etc.
+            tipo_canje: reward.tipo_recompensa === 'descuento' ? 'descuento' : 'consulta_gratis',
+            valor_descuento: reward.tipo_recompensa === 'descuento' ? discountValue : null,
+            cantidad_consultas: reward.tipo_recompensa !== 'descuento' ? 1 : 0,
+            descripcion: reward.descripcion,
+            puntos_requeridos: reward.puntos_requeridos,
+          }
+        };
+        console.log('[PointsScreen] DEBUG - Mapped reward:', mapped);
+        return mapped;
+      });
+
+      console.log('[PointsScreen] DEBUG - mappedCanjes total:', mappedCanjes.length);
 
       // Disponibles primero, después bloqueadas ordenadas por puntos requeridos
       mappedCanjes.sort((a: any, b: any) => {
@@ -202,6 +225,7 @@ export default function PointsScreen({ navigation }: any) {
         return a.canjes.puntos_requeridos - b.canjes.puntos_requeridos;
       });
 
+      console.log('[PointsScreen] DEBUG - Setting canjesDisponibles:', mappedCanjes);
       setCanjesDisponibles(mappedCanjes);
     } catch (error) {
       console.error('[PointsScreen] Error fetching canjes:', error);
@@ -278,12 +302,15 @@ export default function PointsScreen({ navigation }: any) {
   // Refresco suave al re-enfocar – omite el primer focus (cubierto por useEffect)
   useFocusEffect(
     useCallback(() => {
+      // Siempre iniciar la sección de recompensas cerrada al entrar a la pantalla
+      setExpandedRewards(false);
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return; // primer focus: useEffect ya hizo la carga
       }
-      console.log("[PointsScreen] Focus: refrescando puntos y canjes");
-      loadPoints();
+      console.log("[PointsScreen] Focus: refrescando puntos y canjes FORZANDO FRESCO");
+      // ✅ Siempre fuerza refresh cuando se re-enfoca la pantalla
+      loadPoints(true); // forceFresh = true para garantizar datos nuevos
       loadCanjes();
     }, [loadCanjes, loadPoints]) // sin `loading` en deps
   );
@@ -405,7 +432,7 @@ export default function PointsScreen({ navigation }: any) {
           <View style={styles.underlineSmall} />
         </View>
         <View style={styles.pointsBadgeHeader}>
-          <Text style={styles.pointsBadgeText}>{userPoints} PTS TOTALES</Text>
+          <Text style={styles.pointsBadgeText}>{formatPoints(userPoints)} PTS TOTALES</Text>
         </View>
       </View>
 
@@ -440,7 +467,7 @@ export default function PointsScreen({ navigation }: any) {
                   )}
                 </TouchableOpacity>
                 <Text style={[styles.trophyProgressLabel, { opacity: trophy.achieved ? 1 : 0.5 }]}>
-                  {trophy.pointsRequired}
+                  {formatPoints(trophy.pointsRequired)}
                 </Text>
               </View>
             ))}
@@ -467,7 +494,7 @@ export default function PointsScreen({ navigation }: any) {
                   <View style={styles.lockCircle}>
                     <Ionicons name="lock-closed" size={30} color={COLORS.white} />
                   </View>
-                  <Text style={styles.lockText}>Faltan {state.current.pointsRequired - userPoints} pts</Text>
+                  <Text style={styles.lockText}>Faltan {formatPoints(state.current.pointsRequired - userPoints)} pts</Text>
                 </Animated.View>
               )}
             </TouchableOpacity>
@@ -481,7 +508,7 @@ export default function PointsScreen({ navigation }: any) {
               <View style={styles.progressBarBg}>
                 <View style={[styles.progressBarFill, { width: `${state.percentage}%`, backgroundColor: COLORS.primary }]} />
               </View>
-              <Text style={styles.progressLabel}>{userPoints} / {state.current.pointsRequired} Puntos</Text>
+              <Text style={styles.progressLabel}>{formatPoints(userPoints)} / {formatPoints(state.current.pointsRequired)} Puntos</Text>
             </View>
           </Animated.View>
 
@@ -493,17 +520,62 @@ export default function PointsScreen({ navigation }: any) {
         {/* SECCIÓN DE RECOMPENSAS (disponibles + por desbloquear) */}
         {canjesDisponibles.length > 0 && (
           <View style={styles.canjesSection}>
-            <Text style={styles.canjesSectionTitle}>🎁 RECOMPENSAS</Text>
-            <Text style={styles.canjesSectionSubtitle}>Acumula puntos para desbloquear recompensas</Text>
+            <TouchableOpacity
+              style={styles.canjesHeaderTouchable}
+              onPress={() => setExpandedRewards(!expandedRewards)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.canjesHeaderContent}>
+                <Ionicons name="pricetag" size={20} color={COLORS.primary} />
+                <Text style={styles.canjesSectionTitle}>RECOMPENSAS</Text>
+              </View>
+              <Ionicons 
+                name={expandedRewards ? "chevron-up" : "chevron-down"} 
+                size={24} 
+                color={COLORS.primary} 
+              />
+            </TouchableOpacity>
             
-            {canjesDisponibles.map((canjeData: any, idx: number) => {
-              const canje = canjeData.canjes;
-              const desbloqueado: boolean = canjeData.desbloqueado;
-              const yaReclamado: boolean = canjeData.yaReclamado;
-              const icon = desbloqueado
-                ? (canje.tipo_canje === 'descuento' ? '📉' : '⭐')
-                : '🔒';
-              const faltanPuntos = canje.puntos_requeridos - userPoints;
+            {expandedRewards && (
+              <>
+                <Text style={styles.canjesSectionSubtitle}>Acumula puntos para desbloquear recompensas</Text>
+                
+                {canjesDisponibles.map((canjeData: any, idx: number) => {
+                  const canje = canjeData.canjes;
+                  const desbloqueado: boolean = canjeData.desbloqueado;
+                  const yaReclamado: boolean = canjeData.yaReclamado;
+                  const faltanPuntos = canje.puntos_requeridos - userPoints;
+              
+              // Generar descripción profesional del canje
+              const getCanjeDescription = () => {
+                if (canje.tipo_canje === 'descuento') {
+                  return `Descuento en pago de citas`;
+                } else if (canje.tipo_canje === 'consulta_gratis') {
+                  return `Consulta de seguimiento gratis`;
+                }
+                return canje.descripcion || 'Recompensa especial';
+              };
+
+              // Obtener el valor principal (descuento % o consultas)
+              const getCanjeValue = () => {
+                if (canje.tipo_canje === 'descuento') {
+                  // El valor ya es un número (15, 30, etc.)
+                  return `${canje.valor_descuento || 0}%`;
+                } else if (canje.tipo_canje === 'consulta_gratis') {
+                  return `${canje.cantidad_consultas || 1}`;
+                }
+                return '0';
+              };
+
+              // Obtener la etiqueta (ej: "Descuento" o "Consulta")
+              const getCanjeLabel = () => {
+                if (canje.tipo_canje === 'descuento') {
+                  return 'de Descuento';
+                } else if (canje.tipo_canje === 'consulta_gratis') {
+                  return 'Consulta Gratis';
+                }
+                return 'Recompensa';
+              };
               
               return (
                 <TouchableOpacity
@@ -512,19 +584,29 @@ export default function PointsScreen({ navigation }: any) {
                   activeOpacity={desbloqueado ? 0.7 : 1}
                 >
                   <View style={styles.canjeCardContent}>
-                    <Text style={styles.canjeIcon}>{icon}</Text>
-                    <View style={styles.canjeInfo}>
-                      <Text style={[styles.canjeName, !desbloqueado && styles.canjeNameLocked]}>
-                        {canje.nombre_canje}
+                    <View style={styles.canjeValueContainer}>
+                      <Text style={[styles.canjeValueBig, !desbloqueado && styles.canjeValueBigLocked]}>
+                        {getCanjeValue()}
                       </Text>
-                      <Text style={[styles.canjeType, !desbloqueado && styles.canjeTypeLocked]}>
-                        {`Requiere ${canje.puntos_requeridos} pts`}
+                      <Text style={[styles.canjeValueLabel, !desbloqueado && styles.canjeValueLabelLocked]}>
+                        {getCanjeLabel()}
+                      </Text>
+                    </View>
+                    <View style={styles.canjeInfo}>
+                      <Text style={[styles.canjeDescription, !desbloqueado && styles.canjeDescriptionLocked]}>
+                        {getCanjeDescription()}
+                      </Text>
+                      <Text style={[styles.canjeSubtext, !desbloqueado && styles.canjeSubtextLocked]}>
+                        Requiere {formatPoints(canje.puntos_requeridos)} pts
                       </Text>
                     </View>
                   </View>
                   {desbloqueado ? (
                     yaReclamado ? (
                       <View style={styles.canjeStateClaimed}>
+                        <View style={styles.claimedIconBox}>
+                          <Ionicons name="checkmark-circle" size={20} color="#2C7A7B" />
+                        </View>
                         <Text style={styles.canjeStateClaimedText}>RECLAMADO</Text>
                       </View>
                     ) : (
@@ -545,12 +627,14 @@ export default function PointsScreen({ navigation }: any) {
                     )
                   ) : (
                     <View style={styles.canjeStateLocked}>
-                      <Text style={styles.canjeStateLockedText}>Faltan {faltanPuntos} pts</Text>
+                      <Text style={styles.canjeStateLockedText}>Faltan {formatPoints(faltanPuntos)} pts</Text>
                     </View>
                   )}
                 </TouchableOpacity>
               );
-            })}
+                })}
+              </>
+            )}
           </View>
         )}
 
@@ -559,12 +643,12 @@ export default function PointsScreen({ navigation }: any) {
           <View style={styles.metricsGrid}>
             <View style={styles.metricCard}>
               <Text style={styles.metricLabel}>PUNTOS</Text>
-              <Text style={styles.metricValue}>{userPoints}</Text>
+              <Text style={styles.metricValue}>{formatPoints(userPoints)}</Text>
             </View>
 
             <View style={styles.metricCard}>
               <Text style={styles.metricLabel}>OBJETIVO</Text>
-              <Text style={styles.metricValue}>{state.current.pointsRequired}</Text>
+              <Text style={styles.metricValue}>{formatPoints(state.current.pointsRequired)}</Text>
             </View>
 
             <View style={styles.metricCard}>
@@ -606,7 +690,7 @@ export default function PointsScreen({ navigation }: any) {
                   </View>
                   <View style={styles.achievementRowInfo}>
                     <Text style={styles.achievementRowName}>{trophy.name}</Text>
-                    <Text style={styles.achievementRowLevel}>{trophy.level} • {trophy.pointsRequired} pts</Text>
+                    <Text style={styles.achievementRowLevel}>{trophy.level} • {formatPoints(trophy.pointsRequired)} pts</Text>
                   </View>
                   {trophy.achieved && (
                     <View style={styles.achievementRowCheck}>
@@ -688,7 +772,30 @@ const styles = StyleSheet.create({
   trophyProgressLabel: { fontSize: 10, fontWeight: '800', color: COLORS.primary, marginTop: 2 },
   infoSection: { width: '100%', marginTop: 6, marginBottom: 18 },
     canjesSection: { width: '100%', marginVertical: 16 },
-    canjesSectionTitle: { fontSize: 14, fontWeight: '900', color: COLORS.primary, marginBottom: 4, letterSpacing: 0.5, textAlign: 'center' },
+    canjesHeaderTouchable: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingVertical: 12,
+      paddingHorizontal: 12,
+      borderRadius: 12,
+      backgroundColor: COLORS.secondary,
+      borderWidth: 1,
+      borderColor: COLORS.accent,
+      marginBottom: 12,
+      elevation: 1,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 3,
+    },
+    canjesHeaderContent: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      flex: 1,
+    },
+    canjesSectionTitle: { fontSize: 14, fontWeight: '900', color: COLORS.primary, letterSpacing: 0.5 },
     canjesSectionSubtitle: { fontSize: 11, color: COLORS.textLight, marginBottom: 12, textAlign: 'center', fontWeight: '600' },
     canjeCard: {
       backgroundColor: COLORS.white,
@@ -706,37 +813,83 @@ const styles = StyleSheet.create({
       shadowRadius: 3,
       shadowOffset: { width: 0, height: 2 }
     },
-    canjeCardContent: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+    canjeCardContent: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 12 },
+    canjeValueContainer: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 8,
+      minWidth: 60,
+    },
+    canjeValueBig: {
+      fontSize: 32,
+      fontWeight: '900',
+      color: COLORS.primary,
+    },
+    canjeValueBigLocked: {
+      color: '#A0AEC0',
+    },
+    canjeValueLabel: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: COLORS.accent,
+      marginTop: 2,
+    },
+    canjeValueLabelLocked: {
+      color: '#A0AEC0',
+    },
+    canjeIconBox: { 
+      width: 50, 
+      height: 50, 
+      borderRadius: 8, 
+      backgroundColor: COLORS.secondary,
+      justifyContent: 'center', 
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: COLORS.border,
+    },
     canjeIcon: { fontSize: 24, marginRight: 12 },
     canjeInfo: { flex: 1 },
-    canjeName: { fontSize: 12, fontWeight: '900', color: COLORS.textDark, marginBottom: 2 },
+    canjeName: { fontSize: 13, fontWeight: '900', color: COLORS.textDark, marginBottom: 4 },
+    canjeDescription: { fontSize: 11, color: COLORS.accent, fontWeight: '600', marginBottom: 3 },
+    canjeValue: { fontSize: 10, color: COLORS.textLight, fontWeight: '700' },
+    canjeSubtext: { fontSize: 10, color: COLORS.textLight, fontWeight: '600', marginTop: 2 },
+    canjeSubtextLocked: { color: '#718096' },
     canjeType: { fontSize: 10, color: COLORS.accent, fontWeight: '600' },
     canjeState: { backgroundColor: COLORS.secondary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: COLORS.accent },
     canjeStateText: { fontSize: 9, fontWeight: '900', color: COLORS.accent, letterSpacing: 0.3 },
     canjeCardLocked: { borderColor: '#CBD5E0', opacity: 0.75 },
     canjeNameLocked: { color: '#718096' },
     canjeTypeLocked: { color: '#A0AEC0' },
-    canjeStateLocked: { backgroundColor: '#EDF2F7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E0' },
+    canjeDescriptionLocked: { color: '#A0AEC0' },
+    canjeValueLocked: { color: '#718096' },
+    canjeStateLocked: { backgroundColor: '#EDF2F7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#CBD5E0' },
     canjeStateLockedText: { fontSize: 9, fontWeight: '700', color: '#718096', letterSpacing: 0.2 },
     claimButton: {
       backgroundColor: COLORS.primary,
-      paddingHorizontal: 12,
-      paddingVertical: 7,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
       borderRadius: 8,
-      minWidth: 88,
+      minWidth: 92,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    claimButtonText: { fontSize: 10, fontWeight: '900', color: COLORS.white, letterSpacing: 0.4 },
+    claimButtonText: { fontSize: 11, fontWeight: '900', color: COLORS.white, letterSpacing: 0.4 },
     canjeStateClaimed: {
       backgroundColor: '#E6FFFA',
-      paddingHorizontal: 10,
-      paddingVertical: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
       borderRadius: 8,
       borderWidth: 1,
       borderColor: '#81E6D9',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
     },
-    canjeStateClaimedText: { fontSize: 9, fontWeight: '900', color: '#2C7A7B', letterSpacing: 0.3 },
+    claimedIconBox: {
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    canjeStateClaimedText: { fontSize: 10, fontWeight: '900', color: '#2C7A7B', letterSpacing: 0.3 },
   metricsGrid: {
     flexDirection: 'row',
     gap: 10,

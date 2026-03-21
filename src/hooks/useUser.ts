@@ -65,14 +65,14 @@ export const useUser = () => {
       try {
         setError(null);
 
-        if (!authUser?.email) {
+        if (!authUser?.id) {
           setUserData(null);
           setLoading(false);
           return;
         }
 
-        const email = authUser.email.toLowerCase();
-        const cacheKey = `user_${email}`;
+        const normalizedEmail = authUser.email?.toLowerCase() || null;
+        const cacheKey = `user_${authUser.id}`;
 
         // Intenta cargar desde caché y úsalo inmediatamente para no bloquear la UI.
         let cachedData = forceFresh ? null : await getCachedData(cacheKey);
@@ -99,12 +99,32 @@ export const useUser = () => {
           return;
         }
 
-        // Obtener datos del paciente
-        const { data: paciente, error: pacienteError } = await supabase
-          .from("pacientes")
-          .select("*")
-          .eq("correo", email)
-          .single();
+        // Obtener datos del paciente (priorizar id_auth_user para soportar cambios de correo)
+        const { data: pacienteByAuth, error: pacienteByAuthError } =
+          await supabase
+            .from("pacientes")
+            .select("*")
+            .eq("id_auth_user", authUser.id)
+            .maybeSingle();
+
+        let paciente = pacienteByAuth;
+        let pacienteError = pacienteByAuthError;
+
+        if ((!paciente || pacienteError) && normalizedEmail) {
+          const { data: pacienteByEmail, error: pacienteByEmailError } =
+            await supabase
+              .from("pacientes")
+              .select("*")
+              .eq("correo", normalizedEmail)
+              .maybeSingle();
+
+          if (pacienteByEmail) {
+            paciente = pacienteByEmail;
+            pacienteError = null;
+          } else if (pacienteByEmailError && !pacienteError) {
+            pacienteError = pacienteByEmailError;
+          }
+        }
 
         if (pacienteError) {
           setError(OFFLINE_MESSAGE);
@@ -165,24 +185,24 @@ export const useUser = () => {
         setLoading(false);
       }
     },
-    [authUser?.email],
+    [authUser?.email, authUser?.id],
   );
 
   // Función para refrescar manualmente (fuerza la carga desde BD)
   const refreshUser = useCallback(async () => {
     console.log("🔄 Refrescando datos de usuario manualmente...");
     // Limpiar caché primero
-    if (authUser?.email) {
-      const cacheKey = `user_${authUser.email.toLowerCase()}`;
+    if (authUser?.id) {
+      const cacheKey = `user_${authUser.id}`;
       await AsyncStorage.removeItem(cacheKey);
-      console.log("🗑️ Caché eliminada para:", authUser.email);
+      console.log("🗑️ Caché eliminada para usuario:", authUser.id);
     }
     await fetchUserData(true);
     console.log(
       "✅ Usuario refrescado, nuevo id_paciente:",
       userData?.id_paciente,
     );
-  }, [authUser?.email, fetchUserData]);
+  }, [authUser?.id, fetchUserData]);
 
   const updateProfile = async (updates: any) => {
     try {
@@ -266,6 +286,16 @@ export const useUser = () => {
 
       if (updateError) throw updateError;
 
+      // ✅ INVALIDAR CACHÉ DE PUNTOS después de actualizar
+      const cacheKeyPoints = `user_points_${authUser?.id}`;
+      await AsyncStorage.removeItem(cacheKeyPoints);
+      console.log("[useUser] Caché de puntos invalidado");
+
+      // ✅ INVALIDAR CACHÉ DEL USUARIO COMPLETO también
+      const cacheKeyUser = `user_${authUser?.id}`;
+      await AsyncStorage.removeItem(cacheKeyUser);
+      console.log("[useUser] Caché de usuario invalidado");
+
       await supabase.from("log_puntos").insert({
         id_paciente: userData.id_paciente,
         puntos: puntosAgregados,
@@ -302,15 +332,14 @@ export const useUser = () => {
       });
 
       // Actualizar caché después de actualizar puntos
-      const email = authUser?.email?.toLowerCase();
-      if (email) {
+      if (authUser?.id) {
         const updatedData = {
           ...userData,
           puntos_totales: nuevosPuntosTotales,
           puntos_hoy: nuevosPuntosHoy,
           nivel: nuevoNivel,
         };
-        await setCachedData(`user_${email}`, updatedData);
+        await setCachedData(`user_${authUser.id}`, updatedData);
       }
 
       return { success: true, message: "Puntos actualizados correctamente" };
@@ -324,12 +353,12 @@ export const useUser = () => {
   // useCallback es OBLIGATORIO para que loadPoints/loadCanjes en PointsScreen sean estables
   const fetchUserPointsFast = useCallback(async () => {
     try {
-      if (!authUser?.email) {
+      if (!authUser?.id) {
         return { puntos_totales: 0, puntos_hoy: 0, nivel: "principiante" };
       }
 
-      const email = authUser.email.toLowerCase();
-      const cacheKey = `user_points_${email}`;
+      const normalizedEmail = authUser.email?.toLowerCase() || null;
+      const cacheKey = `user_points_${authUser.id}`;
 
       // 1. Intenta cargar desde caché
       let cachedPoints = await getCachedData(cacheKey);
@@ -341,13 +370,24 @@ export const useUser = () => {
       console.log("Caché de puntos expirado o no existe → fetch fresco");
 
       // 2. Consulta fresca si no hay caché o expiró
-      const { data: paciente, error: err1 } = await supabase
+      const { data: pacienteByAuth, error: errByAuth } = await supabase
         .from("pacientes")
         .select("id_paciente")
-        .eq("correo", email)
-        .single();
+        .eq("id_auth_user", authUser.id)
+        .maybeSingle();
 
-      if (err1 || !paciente) {
+      let paciente = pacienteByAuth;
+
+      if (!paciente && normalizedEmail) {
+        const { data: pacienteByEmail } = await supabase
+          .from("pacientes")
+          .select("id_paciente")
+          .eq("correo", normalizedEmail)
+          .maybeSingle();
+        paciente = pacienteByEmail;
+      }
+
+      if (errByAuth || !paciente) {
         return { puntos_totales: 0, puntos_hoy: 0, nivel: "principiante" };
       }
 
@@ -374,7 +414,7 @@ export const useUser = () => {
       console.error("Error fetchUserPointsFast:", err);
       return { puntos_totales: 0, puntos_hoy: 0, nivel: "principiante" };
     }
-  }, [authUser?.email]);
+  }, [authUser?.email, authUser?.id]);
 
   return {
     user: userData,
