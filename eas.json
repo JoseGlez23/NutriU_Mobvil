@@ -1,28 +1,19 @@
 {
-  "cli": {
-    "version": ">= 18.0.6",
-    "appVersionSource": "remote"
-  },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "hooks": {
-        "prebuild": "node scripts/generate-google-services.js"
-      }
+      "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal",
-      "hooks": {
-        "prebuild": "node scripts/generate-google-services.js"
-      }
+      "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "hooks": {
-        "prebuild": "node scripts/generate-google-services.js"
-      }
+      "autoIncrement": true
     }
+  },
+  "cli": {
+    "version": ">= 18.0.6",
+    "appVersionSource": "remote"
   },
   "submit": {
     "production": {}
