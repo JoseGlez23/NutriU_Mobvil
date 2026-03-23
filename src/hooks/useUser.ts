@@ -9,8 +9,7 @@ import NetInfo from "@react-native-community/netinfo";
 const CACHE_TTL = 5 * 60 * 1000;
 const OFFLINE_MESSAGE = "No tienes internet. Revisa tu conexión.";
 const BACKEND_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  "https://carolin-nonprovisional-correctly.ngrok-free.dev";
+  process.env.EXPO_PUBLIC_BACKEND_URL || "https://servidor-nutri-u.vercel.app";
 
 export const useUser = () => {
   const { user: authUser, session } = useAuth();

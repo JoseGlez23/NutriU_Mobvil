@@ -70,9 +70,7 @@ const PAYMENT_COLORS = {
 };
 
 const SONORA_TIMEZONE = 'America/Phoenix';
-const BACKEND_URL =
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  'https://carolin-nonprovisional-correctly.ngrok-free.dev';
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://servidor-nutri-u.vercel.app';
 
 const parseDbTimestampAsUtc = (value: string) => {
   const baseValue = String(value || '').trim().replace(' ', 'T');
